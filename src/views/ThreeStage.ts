@@ -1,9 +1,9 @@
-import { PerspectiveCamera, Scene, Timer, Vector2, WebGLRenderer, type Camera } from 'three';
+import { CanvasTexture, Group, PerspectiveCamera, Scene, Sprite, SpriteMaterial, Timer, Vector2, WebGLRenderer, type Camera } from 'three';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
-import { CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
+import { CSS2DObject, CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
 export interface StageView {
@@ -35,6 +35,19 @@ export class ThreeStage {
   private clock = new Timer();
   private current: { host: HTMLElement; view: StageView; ro: ResizeObserver; controls?: OrbitControls; t: number } | null = null;
   private wrap = document.createElement('div');
+  /** XR: the world the headset sees; the active slide's scene is parented under `xrAnchor`. */
+  readonly xrWorld = new Scene();
+  readonly xrAnchor = new Group();
+  /** Base camera for XR; the headset pose is applied on top of it by three.js. */
+  readonly xrCamera = new PerspectiveCamera(60, 1, 0.02, 200);
+  /** Called every frame while presenting (controllers, panel). */
+  xrFrame: ((dt: number) => void) | null = null;
+  /** Scene to show in XR when the current slide has no 3D view. */
+  xrFallback: (() => Scene) | null = null;
+  private xrShown: Scene | null = null;
+  /** In AR, objects tagged `userData.xrHideInAR` (star fields, backdrops) are hidden. */
+  xrHideTagged = false;
+  private labelSyncT = 0;
 
   constructor() {
     let renderer: WebGLRenderer | null = null;
@@ -42,6 +55,7 @@ export class ThreeStage {
       renderer = new WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
       renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
       renderer.setClearColor(0x000000, 0);
+      renderer.xr.enabled = true;
       this.renderPass = new RenderPass(new Scene(), new PerspectiveCamera());
       this.bloomPass = new UnrealBloomPass(new Vector2(256, 256), 0.8, 0.5, 0.15);
       this.composer = new EffectComposer(renderer);
@@ -56,7 +70,12 @@ export class ThreeStage {
     if (renderer) this.wrap.append(renderer.domElement);
     this.labels.domElement.className = 'three-labels';
     this.wrap.append(this.labels.domElement);
+    this.xrWorld.add(this.xrAnchor, this.xrCamera);
     renderer?.setAnimationLoop(() => this.frame());
+  }
+
+  get presenting(): boolean {
+    return !!this.renderer?.xr.isPresenting;
   }
 
   /** Put the 3D canvas into `host` and start rendering `view`. */
@@ -96,6 +115,10 @@ export class ThreeStage {
     cur.ro.disconnect();
     cur.controls?.dispose();
     const canvas = this.renderer!.domElement;
+    if (this.presenting) {
+      this.wrap.remove();
+      return;
+    }
     try {
       // Render once more and copy synchronously (the drawing buffer is still valid).
       this.render(cur.view);
@@ -118,7 +141,7 @@ export class ThreeStage {
 
   private resize(): void {
     const cur = this.current;
-    if (!cur || !this.renderer) return;
+    if (!cur || !this.renderer || this.presenting) return;
     const w = Math.max(1, cur.host.clientWidth);
     const h = Math.max(1, cur.host.clientHeight);
     this.renderer.setSize(w, h, false);
@@ -130,6 +153,7 @@ export class ThreeStage {
   }
 
   private render(view: StageView): void {
+    if (this.presenting) return this.renderXR(view.scene);
     if (view.bloom) this.composer!.render();
     else this.renderer!.render(view.scene, view.camera as Camera);
     this.labels.render(view.scene, view.camera);
@@ -139,10 +163,96 @@ export class ThreeStage {
     const cur = this.current;
     this.clock.update();
     const dt = Math.min(this.clock.getDelta(), 0.1);
+    if (this.presenting) {
+      this.xrFrame?.(dt);
+      if (!cur) {
+        const fb = this.xrFallback?.();
+        if (fb) this.renderXR(fb);
+        return;
+      }
+    }
     if (!cur) return;
     cur.t += dt;
     cur.view.onFrame?.(cur.t, dt);
-    cur.controls?.update();
+    if (!this.presenting) cur.controls?.update();
     this.render(cur.view);
   }
+
+  /** Render `scene` inside the XR world (bloom and CSS labels don't work in XR, sprites stand in). */
+  private renderXR(scene: Scene): void {
+    if (this.xrShown !== scene) {
+      this.xrShown?.removeFromParent();
+      this.xrAnchor.add(scene);
+      this.xrShown = scene;
+      scene.traverse((o) => {
+        if (o.userData.xrHideInAR) o.visible = !this.xrHideTagged;
+      });
+      this.labelSyncT = 0;
+    }
+    this.labelSyncT -= 1;
+    if (this.labelSyncT <= 0) {
+      syncLabelSprites(scene);
+      this.labelSyncT = 30;
+    }
+    this.renderer!.render(this.xrWorld, this.xrCamera);
+  }
+
+  /** Called by the XR controller when a session ends: hand the scene back to the page. */
+  endXR(): void {
+    this.xrShown?.removeFromParent();
+    this.xrShown = null;
+    hideLabelSprites(this.current?.view.scene);
+    this.resize();
+  }
+}
+
+/** In XR, every CSS2D label gets a sprite twin with the same text. */
+function syncLabelSprites(scene: Scene): void {
+  scene.traverse((o) => {
+    if (!(o instanceof CSS2DObject)) return;
+    const text = o.element.textContent ?? '';
+    let sp = o.userData.xrSprite as Sprite | undefined;
+    if (sp && sp.userData.text === text) {
+      sp.visible = o.visible;
+      return;
+    }
+    if (sp) {
+      sp.material.map?.dispose();
+      sp.material.dispose();
+      sp.removeFromParent();
+    }
+    sp = textSprite(text, getComputedStyle(o.element).color || '#e8ebff');
+    sp.userData.text = text;
+    o.userData.xrSprite = sp;
+    o.add(sp);
+  });
+}
+
+function hideLabelSprites(scene?: Scene): void {
+  scene?.traverse((o) => {
+    if (o instanceof CSS2DObject && o.userData.xrSprite) (o.userData.xrSprite as Sprite).visible = false;
+  });
+}
+
+export function textSprite(text: string, color = '#e8ebff', worldHeight = 0.16): Sprite {
+  const c = document.createElement('canvas');
+  const g = c.getContext('2d')!;
+  const font = '600 40px "JetBrains Mono", monospace';
+  g.font = font;
+  const w = Math.ceil(g.measureText(text).width) + 28;
+  c.width = Math.max(32, w);
+  c.height = 60;
+  g.font = font;
+  g.fillStyle = 'rgba(5,6,13,0.8)';
+  g.beginPath();
+  g.roundRect(0, 0, c.width, c.height, 12);
+  g.fill();
+  g.fillStyle = color;
+  g.textBaseline = 'middle';
+  g.fillText(text, 14, 31);
+  const tex = new CanvasTexture(c);
+  const sp = new Sprite(new SpriteMaterial({ map: tex, depthTest: false, transparent: true }));
+  sp.scale.set((worldHeight * c.width) / c.height, worldHeight, 1);
+  sp.renderOrder = 10;
+  return sp;
 }

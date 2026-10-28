@@ -11,6 +11,7 @@ import { ACCEPTED_EXTENSIONS, BlendFileError, loadModelFile } from './model/load
 import { SLIDES } from './slides';
 import { GROUP_LABEL } from './slides/standard';
 import { ThreeStage } from './views/ThreeStage';
+import { XRController } from './xr/XRController';
 
 const app = document.getElementById('app')!;
 
@@ -34,11 +35,12 @@ const apiSeg = h('div.seg.api-seg', { attrs: { role: 'radiogroup', 'aria-label':
 const modeSeg = h('div.seg.mode-seg', { attrs: { role: 'radiogroup' } });
 const langSeg = h('div.seg.lang-seg', { attrs: { role: 'radiogroup' } });
 const meshInfo = h('div.mesh-info');
+const xrControls = h('div.xr-controls');
 
 const topbar = h('header.topbar.glass', {}, [
   h('div.brand', {}, [h('span.logo'), h('span', { html: 'Render<b>Pipeline</b><i>//</i>Viz' })]),
   h('div.model-picker', {}, [modelSelect, loadBtn, fileInput, meshInfo]),
-  h('div.controls', {}, [apiSeg, modeSeg, langSeg]),
+  h('div.controls', {}, [apiSeg, modeSeg, langSeg, xrControls]),
 ]);
 
 const stageEl = h('main.slides');
@@ -63,6 +65,7 @@ app.append(bgGlow, topbar, stageEl, bottombar, dropOverlay, toast);
 // ---------- Engine ----------
 const stage = new ThreeStage();
 const engine = new SlideEngine(stageEl, SLIDES, store, stage, () => derived);
+const xr = new XRController(stage, engine, store);
 
 function segmented<T extends string>(host: HTMLElement, items: { id: T; label: string; cls?: string }[], current: T, onPick: (id: T) => void) {
   host.replaceChildren(
@@ -255,3 +258,5 @@ window.addEventListener('rpv:go', (e) => engine.go((e as CustomEvent<number>).de
 
 renderChrome();
 engine.start();
+void xr.mountButtons(xrControls);
+window.addEventListener('rpv:toast', (e) => showToast((e as CustomEvent<string>).detail, 'err'));

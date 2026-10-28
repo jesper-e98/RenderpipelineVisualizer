@@ -85,7 +85,7 @@ export function apiPanel(spec: ApiPanelSpec, ctx: SlideContext): { el: HTMLEleme
     const c = !el.classList.contains('collapsed');
     setCollapsed(c);
     try {
-      localStorage.setItem('rpv.panelCollapsed', c ? '1' : '0');
+      localStorage.setItem(PANEL_KEY, c ? '1' : '0');
     } catch {
       /* optional preference */
     }
@@ -111,10 +111,12 @@ export function apiPanel(spec: ApiPanelSpec, ctx: SlideContext): { el: HTMLEleme
   };
 }
 
+/** The code panel starts collapsed so the 3D view gets the room; the user's choice is remembered. */
+const PANEL_KEY = 'rpv.panelCollapsed2';
 function readCollapsed(): boolean {
   try {
-    return localStorage.getItem('rpv.panelCollapsed') === '1';
+    return localStorage.getItem(PANEL_KEY) !== '0';
   } catch {
-    return false;
+    return true;
   }
 }

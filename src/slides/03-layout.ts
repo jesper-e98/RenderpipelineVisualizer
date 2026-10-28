@@ -1,162 +1,155 @@
-import gsap from 'gsap';
-import { dur, h } from '../core/dom';
+import { Vector3 } from 'three';
+import { h } from '../core/dom';
 import { L } from '../core/i18n';
 import type { ApiId } from '../core/state';
 import { formatBytes } from '../pipeline/layout';
-import { card, indexView, memoryView, stat } from '../views/widgets';
+import { createModelStage, secs } from '../views/ModelStage';
+import { COLORS } from '../views/three-helpers';
+import { indexView, memoryView, stat } from '../views/widgets';
 import { standardSlide } from './standard';
 import type { ApiPanelSpec, SlideContext, Visual } from './types';
 
+const ATTR_CLS = { position: 'c-pos', normal: 'c-nrm', uv: 'c-uv' } as const;
+
 /* ------------------------------------------------------------------ */
-/* Real data: the interleaved vertex buffer of the loaded model        */
+/* Real data: the model in 3D, with its vertex buffer on the side     */
 /* ------------------------------------------------------------------ */
 function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
   const { t } = ctx;
   const mesh = ctx.state.mesh;
   const layout = ctx.derived.layout;
   const api = ctx.state.api;
+  const ms = createModelStage(host, ctx, { shift: -0.17, autoRotate: 0, layers: { solid: 0.25, wire: 0.25, points: 0.5 } });
 
-  // Step 0: a single vertex, byte by byte.
-  const v0 = memoryView(layout, 1);
-  const fields = layout.attributes.map((a) =>
-    h('tr', {}, [
-      h(`td.${{ position: 'c-pos', normal: 'c-nrm', uv: 'c-uv' }[a.name]}`, { text: a.name }),
-      h('td.mono', { text: String(a.offset) }),
-      h('td.mono', { text: String(a.components * 4) }),
-      h('td.mono', { text: a.formats[api] }),
-    ]),
-  );
+  // The vertex we follow: first corner of the showcase triangle.
+  const tri = ctx.derived.showcaseTriangle(api);
+  const [va, vb, vc] = ctx.derived.triangleVertices(tri);
+  const p = ctx.derived.position(va);
+  const n = ctx.derived.normal(va);
+  const uv = ctx.derived.uv(va);
+
+  // Panel 1: one vertex, byte by byte.
+  const one = memoryView(layout, 1);
+  // Show the followed vertex's bytes rather than vertex 0's.
+  const bytes = new Uint8Array(layout.vertexBuffer, va * layout.stride, layout.stride);
+  one.rows[0].querySelectorAll('.mem-cell').forEach((c, i) => (c.textContent = bytes[i].toString(16).padStart(2, '0')));
+  one.rows[0].querySelector('.mem-addr')!.textContent = `+${(va * layout.stride).toString(16)}`;
   const values = layout.attributes.map((a) => {
-    const src = a.name === 'position' ? mesh.positions : a.name === 'normal' ? mesh.normals : mesh.uvs!;
-    const vals = Array.from(src.subarray(0, a.components), (x) => x.toFixed(4));
-    return h('div.mono', {}, [h(`span.${{ position: 'c-pos', normal: 'c-nrm', uv: 'c-uv' }[a.name]}`, { text: a.name.padEnd(9) }), vals.join('  ')]);
+    const v = a.name === 'position' ? p : a.name === 'normal' ? n : uv ?? [];
+    return h('div.mono', {}, [h(`span.${ATTR_CLS[a.name]}`, { text: a.name.padEnd(9) }), Array.from(v, (x) => x.toFixed(4)).join('  ')]);
   });
-  const vertexCard = card(t(L('Vertex 0 – en enda vertex i minnet', 'Vertex 0 – a single vertex in memory')), [
-    h('div', { style: { margin: '4px 0 10px' } }, values),
-    v0.el,
-    h('table.layout-table', {}, [
-      h('thead', {}, [h('tr', {}, [h('th', { text: 'attribute' }), h('th', { text: 'offset' }), h('th', { text: 'bytes' }), h('th', { text: 'format' })])]),
-      h('tbody', {}, fields),
-    ]),
+  const vertexPanel = ms.panel(t(L(`Vertex ${va} i minnet`, `Vertex ${va} in memory`)), [
+    h('div', { style: { marginBottom: '8px' } }, values),
+    h('div.v-scroll', {}, [one.el]),
+    h('div.hint', { text: layout.attributes.map((a) => `${a.name} @${a.offset}`).join(' · ') + ` · stride ${layout.stride} B` }),
   ]);
 
-  // Step 1: many vertices back to back.
-  const many = memoryView(layout, 18);
-  const manyCard = card(
-    t(L(`Vertexbuffert – ${mesh.vertexCount.toLocaleString()} vertices × ${layout.stride} B`, `Vertex buffer – ${mesh.vertexCount.toLocaleString()} vertices × ${layout.stride} B`)),
-    [h('div.v-scroll', { style: { maxHeight: '220px' } }, [many.el]), h('div.hint', { text: '…' })],
-  );
+  // Panel 2: many vertices back to back.
+  const many = memoryView(layout, 12);
+  const bufferPanel = ms.panel(t(L('Vertexbuffert', 'Vertex buffer')), [
+    h('div.stat-row', {}, [stat(`${layout.stride} B`, 'stride', 'glow-cyan'), stat(formatBytes(layout.vertexBytes), `${mesh.vertexCount.toLocaleString()} vertices`)]),
+    h('div.v-scroll', { style: { maxHeight: '150px', marginTop: '8px' } }, [many.el]),
+  ]);
 
-  // Step 2: the index buffer and what it saves.
-  const idxBytes = layout.indexType === 'uint16' ? 2 : 4;
+  // Panel 3: index buffer and what it saves.
   const noIndex = mesh.triangleCount * 3 * layout.stride;
   const withIndex = layout.vertexBytes + layout.indexBytes;
-  const indexCard = card(t(L('Indexbuffert', 'Index buffer')), [
-    indexView(mesh.indices, 36),
-    h('div.stat-row', { style: { marginTop: '12px' } }, [
+  const indexPanel = ms.panel(t(L('Indexbuffert', 'Index buffer')), [
+    indexView(mesh.indices.subarray(tri * 3, tri * 3 + 12), 12),
+    h('div.stat-row', { style: { marginTop: '8px' } }, [
       stat(layout.indexType, t(L('indextyp', 'index type')), 'c-idx'),
-      stat(formatBytes(noIndex), t(L('utan index', 'without indices'))),
-      stat(formatBytes(withIndex), t(L(`med index (${idxBytes} B/index)`, `with indices (${idxBytes} B/index)`)), 'glow-cyan'),
-      stat(`${Math.round((1 - withIndex / noIndex) * 100)} %`, t(L('sparat minne', 'memory saved')), 'glow-magenta'),
+      stat(formatBytes(withIndex), t(L('med index', 'with indices')), 'glow-cyan'),
+      stat(`−${Math.round((1 - withIndex / noIndex) * 100)} %`, t(L(`mot ${formatBytes(noIndex)}`, `vs ${formatBytes(noIndex)}`)), 'glow-magenta'),
     ]),
   ]);
+  const panels = [vertexPanel, bufferPanel, indexPanel];
 
-  const statsRow = h('div.stat-row', {}, [
-    stat(`${layout.stride} B`, 'stride', 'glow-cyan'),
-    stat(formatBytes(layout.vertexBytes), 'vertex buffer'),
-    stat(formatBytes(layout.indexBytes), 'index buffer'),
-  ]);
-  const grid = h('div.v-grid.v-scroll', { style: { alignContent: 'start', height: '100%' } }, [statsRow, vertexCard, manyCard, indexCard]);
-  host.append(grid);
-  const parts = [vertexCard, manyCard, indexCard];
+  // 3D helpers: normal arrow at the vertex, and a stream of vertices "being written" to memory.
+  const arrow = ms.arrow(p, n, 0.45, COLORS.magenta, 'normal');
+  const COUNT = Math.min(600, mesh.vertexCount);
+  const stream = ms.particles(COUNT, COLORS.cyan, 0.035, 'world');
+  // Start at the vertices as seen in the scene (model pose applied), end in a flat ribbon
+  // under the model, in vertex order – the buffer.
+  ms.pivot.updateMatrixWorld(true);
+  const from = ms.samplePositions(COUNT);
+  const v = new Vector3();
+  for (let i = 0; i < COUNT; i++) {
+    v.fromArray(from, i * 3).applyMatrix4(ms.pivot.matrixWorld).toArray(from, i * 3);
+  }
+  const to = new Float32Array(COUNT * 3);
+  for (let i = 0; i < COUNT; i++) {
+    to[i * 3] = -1.7 + (i / COUNT) * 2.9;
+    to[i * 3 + 1] = -1.0 + ((i % 3) - 1) * 0.05;
+    to[i * 3 + 2] = 0.4;
+  }
+  stream.setTargets(from, to);
 
   return {
     show(step, animate) {
-      parts.forEach((p, i) => {
-        p.style.display = i <= step ? '' : 'none';
-      });
-      if (!animate) return;
-      const target = parts[step];
-      gsap.fromTo(target, { opacity: 0, y: 20 }, { opacity: 1, y: 0, duration: dur(0.5), ease: 'power2.out' });
-      if (step === 0) gsap.from(v0.el.querySelectorAll('.mem-cell'), { opacity: 0, scale: 0.4, stagger: 0.015, duration: dur(0.3) });
-      if (step === 1) gsap.from(many.rows, { opacity: 0, x: -30, stagger: 0.04, duration: dur(0.35) });
-      target.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      panels.forEach((el, i) => (el.style.display = i <= step ? '' : 'none'));
+      panels.forEach((el, i) => el.classList.toggle('collapsed', i < step));
+      arrow.visible = step === 0;
+      ms.markVertices(step === 2 ? [va, vb, vc] : [va], step === 2 ? COLORS.green : COLORS.cyan, step === 2 ? [String(va), String(vb), String(vc)] : [`v${va}`]);
+      ms.highlightTriangle(step === 2 ? tri : null, COLORS.green);
+      ms.setLayer('solid', step === 2 ? 0.85 : 0.25, secs(animate, 0.6));
+      ms.setLayer('points', step === 1 ? 0.15 : 0.5, secs(animate, 0.6));
+      stream.points.visible = step === 1;
+      if (step === 1) {
+        stream.progress(0, 0);
+        stream.progress(1, animate ? 2.4 : 0);
+      }
     },
-    destroy() {},
+    destroy() {
+      ms.destroy();
+    },
   };
 }
 
 /* ------------------------------------------------------------------ */
-/* Concept: separate arrays (SoA) get packed into one strip (AoS)      */
+/* Concept: three separate arrays (SoA) fold into one model (AoS)      */
 /* ------------------------------------------------------------------ */
 function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
   const { t } = ctx;
-  const N = 4;
-  const kinds = [
-    { k: 'P', cls: 'pos', label: 'position' },
-    { k: 'N', cls: 'nrm', label: 'normal' },
-    { k: 'T', cls: 'uv', label: 'uv' },
-  ];
-  const stageEl = h('div.v-fill.pack-stage');
-  const caption = h('div.pack-caption');
-  host.append(stageEl, caption);
-  const blocks: { el: HTMLElement; kind: number; v: number }[] = [];
-  for (let kind = 0; kind < 3; kind++) {
-    for (let v = 0; v < N; v++) {
-      const el = h(`div.pack-block.mem-cell.${kinds[kind].cls}`, { text: `${kinds[kind].k}${v}` });
-      stageEl.append(el);
-      blocks.push({ el, kind, v });
+  const ms = createModelStage(host, ctx, { autoRotate: 0.25, bloom: 0.8, layers: { solid: 0, points: 0 } });
+  const COUNT = Math.min(1500, ctx.state.mesh.vertexCount);
+  const home = ms.samplePositions(COUNT);
+  const offsets = [-1.6, 0, 1.6];
+  const colors = [COLORS.cyan, COLORS.magenta, COLORS.amber];
+  const clouds = offsets.map((dx, k) => {
+    const pc = ms.particles(COUNT, colors[k], 0.03, 'world');
+    const spread = new Float32Array(home);
+    for (let i = 0; i < COUNT; i++) {
+      // Each array laid out as a flat "column" of its own, scaled down.
+      spread[i * 3] = home[i * 3] * 0.5 + dx;
+      spread[i * 3 + 1] = home[i * 3 + 1] * 0.5 + 0.15;
+      spread[i * 3 + 2] = home[i * 3 + 2] * 0.5;
     }
-  }
-  const rowLabels = kinds.map((k) => h(`div.pack-label.c-${k.cls}`, { text: k.label + '[]' }));
-  rowLabels.forEach((l) => stageEl.append(l));
-  const idxRow = h('div.pack-index', {}, [0, 1, 2, 2, 1, 3].map((i, k) => h(`span.mem-cell.idx${k === 2 ? '.gap' : ''}`, { text: String(i) })));
-  stageEl.append(idxRow);
-
-  const place = (step: number, animate: boolean) => {
-    const W = stageEl.clientWidth;
-    const H = stageEl.clientHeight;
-    const bw = Math.min(64, (W - 40) / (N * 3 + 1));
-    const bh = 38;
-    blocks.forEach(({ el, kind, v }) => {
-      let x: number;
-      let y: number;
-      if (step === 0) {
-        x = W / 2 - (N * (bw + 10)) / 2 + v * (bw + 10) + 50;
-        y = H * 0.22 + kind * (bh + 18);
-      } else {
-        const slot = v * 3 + kind;
-        x = W / 2 - (N * 3 * (bw + 2)) / 2 + slot * (bw + 2) + (v * 6 - 9);
-        y = H * 0.42;
-      }
-      const props = { x, y, width: bw, height: bh };
-      if (animate) gsap.to(el, { ...props, duration: dur(0.9), ease: 'power3.inOut', delay: step === 1 ? (v * 3 + kind) * 0.04 : 0 });
-      else gsap.set(el, props);
-    });
-    rowLabels.forEach((l, kind) => {
-      const props = { x: W / 2 - (N * (bw + 10)) / 2 - 80, y: H * 0.22 + kind * (bh + 18) + 10, opacity: step === 0 ? 1 : 0 };
-      if (animate) gsap.to(l, { ...props, duration: dur(0.5) });
-      else gsap.set(l, props);
-    });
-    gsap.set(idxRow, { x: W / 2 - 120, y: H * 0.68 });
-    if (animate && step === 2) gsap.fromTo(idxRow.children, { opacity: 0, y: 14 }, { opacity: 1, y: 0, stagger: 0.08, duration: dur(0.4) });
-    else gsap.set(idxRow.children, { opacity: step >= 2 ? 1 : 0 });
-    caption.innerHTML = [
-      t(L('Tre separata arrayer: alla positioner, alla normaler, alla UV:n (<i>struct of arrays</i>).', 'Three separate arrays: all positions, all normals, all UVs (<i>struct of arrays</i>).')),
-      t(L('Interleaved: varje vertex ligger samlad – P N T, P N T … (<i>array of structs</i>). Bra för cachen: en vertex = en sammanhängande bit minne.', 'Interleaved: each vertex is packed together – P N T, P N T … (<i>array of structs</i>). Cache friendly: one vertex = one contiguous chunk of memory.')),
-      t(L('Två trianglar delar två hörn. Indexbufferten pekar ut vertices istället för att kopiera dem: <code>0 1 2 · 2 1 3</code>.', 'Two triangles share two corners. The index buffer points at vertices instead of copying them: <code>0 1 2 · 2 1 3</code>.')),
-    ][step];
-  };
-  const ro = new ResizeObserver(() => place(current, false));
-  let current = 0;
-  ro.observe(stageEl);
+    pc.setTargets(spread, home);
+    return pc;
+  });
+  const caption = ms.panel(t(L('Vad händer', 'What happens')), [h('p.pack-text')], { side: 'bottom' });
+  const text = caption.querySelector('.pack-text')!;
+  const captions = [
+    L('Tre separata arrayer – alla positioner (cyan), alla normaler (magenta), alla UV:n (amber). <i>Struct of arrays.</i>', 'Three separate arrays – all positions (cyan), all normals (magenta), all UVs (amber). <i>Struct of arrays.</i>'),
+    L('Interleaved: varje vertex samlas på ett ställe – P N T, P N T … <i>Array of structs</i>, en sammanhängande bit minne per vertex.', 'Interleaved: each vertex is packed in one place – P N T, P N T … <i>Array of structs</i>, one contiguous chunk of memory per vertex.'),
+    L('Trianglar pekar ut sina hörn med index – delade hörn lagras bara en gång.', 'Triangles point at their corners by index – shared corners are stored only once.'),
+  ];
   return {
     show(step, animate) {
-      current = step;
-      place(step, animate);
+      text.innerHTML = t(captions[step]);
+      clouds.forEach((c) => {
+        c.points.visible = step < 2;
+        c.progress(step >= 1 ? 1 : 0, secs(animate, 1.8));
+      });
+      ms.setLayer('wire', step === 2 ? 0.35 : 0, secs(animate, 0.6));
+      ms.setLayer('solid', step === 2 ? 1 : 0, secs(animate, 0.4));
+      if (step === 2) {
+        ms.drawTriangles(0, 0);
+        ms.drawTriangles(ctx.state.mesh.triangleCount, animate ? 2.5 : 0);
+      } else ms.drawTriangles(1e9, 0);
     },
     destroy() {
-      ro.disconnect();
+      ms.destroy();
     },
   };
 }
