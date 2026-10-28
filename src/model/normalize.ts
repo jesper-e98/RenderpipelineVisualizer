@@ -88,6 +88,17 @@ export function geometryToMesh(
   for (const name of Object.keys(g.attributes)) {
     if (!['position', 'normal', 'uv'].includes(name)) g.deleteAttribute(name);
   }
+  // Many exporters (notably STL) write zero normals; treat those as missing.
+  const n = g.attributes.normal;
+  if (n) {
+    for (let i = 0; i < n.count; i++) {
+      if (Math.hypot(n.getX(i), n.getY(i), n.getZ(i)) < 1e-6) {
+        g.deleteAttribute('normal');
+        had = { ...had, normals: false };
+        break;
+      }
+    }
+  }
   if (!g.index) g = mergeVertices(g, 1e-5); // weld duplicate vertices → index buffer
   if (!had.normals || !g.attributes.normal) g.computeVertexNormals();
 

@@ -1,0 +1,40 @@
+.sum { display: grid; padding: 16px; min-height: 0; }
+.sum-page { display: grid; gap: 14px; align-content: start; min-height: 0; height: 100%; }
+.sum-page:first-child { grid-template-rows: auto minmax(0, 1fr); }
+.sum-row { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(220px, 1fr); gap: 14px; min-height: 0; }
+.sum-img { position: relative; min-height: 220px; border-radius: 12px; overflow: hidden; border: 1px solid var(--line); box-shadow: 0 0 40px rgba(255, 63, 210, 0.15); }
+.sum .stat-row { align-content: start; }
+.sum .stat .v { font-size: 18px; }
+
+.journey { position: relative; display: flex; gap: 6px; flex-wrap: wrap; padding: 10px 0 14px; }
+.j-track { position: absolute; left: 0; right: 0; bottom: 4px; height: 2px; background: linear-gradient(90deg, var(--g-cpu), var(--g-api), var(--g-gpu-prog), var(--g-gpu-fixed)); opacity: 0.5; border-radius: 2px; }
+.j-packet { position: absolute; top: -3px; width: 30px; height: 8px; border-radius: 8px; background: #fff; box-shadow: 0 0 14px #fff, 0 0 30px var(--magenta); animation: jtravel 3.2s linear infinite; }
+@keyframes jtravel { from { left: 0; } to { left: calc(100% - 30px); } }
+.j-chip { border: 1px solid color-mix(in srgb, var(--gc) 55%, transparent); background: color-mix(in srgb, var(--gc) 12%, transparent); color: var(--text); border-radius: 99px; padding: 5px 12px; font-size: 13px; font-weight: 600; transition: all 0.2s; }
+.j-chip:hover { background: var(--gc); color: #05060d; box-shadow: 0 0 16px var(--gc); }
+
+table.compare { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13px; }
+table.compare th, table.compare td { padding: 8px 10px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+table.compare thead th { font-size: 12px; letter-spacing: 0.05em; color: var(--muted); }
+table.compare thead th.opengl { color: var(--api-opengl); }
+table.compare thead th.vulkan { color: var(--api-vulkan); }
+table.compare thead th.d3d12 { color: var(--api-d3d12); }
+table.compare tbody th { color: var(--muted); font-weight: 600; white-space: nowrap; }
+table.compare td { color: var(--muted); }
+table.compare .cur { color: var(--text); background: color-mix(in srgb, var(--api) 10%, transparent); }
+table.compare thead .cur { box-shadow: inset 0 -2px 0 var(--api); }
+
+.resources { display: grid; gap: 8px; }
+.resources h4 { margin: 0 0 4px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); }
+.resources a { color: var(--cyan); text-decoration: none; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; background: rgba(8, 10, 24, 0.55); transition: all 0.2s; }
+.resources a:hover { border-color: var(--cyan); box-shadow: 0 0 16px rgba(56, 225, 255, 0.25); }
+
+.loop { display: grid; place-items: center; }
+.loop-ring { position: relative; width: min(70%, 380px); aspect-ratio: 1; border-radius: 50%; border: 2px solid rgba(155, 123, 255, 0.35); box-shadow: 0 0 40px rgba(155, 123, 255, 0.25), inset 0 0 40px rgba(56, 225, 255, 0.1); }
+.loop-node { position: absolute; left: 50%; top: 50%; border: 1px solid var(--gc); background: rgba(5, 6, 13, 0.85); color: var(--text); border-radius: 99px; padding: 4px 11px; font-size: 12px; font-weight: 600; box-shadow: 0 0 14px color-mix(in srgb, var(--gc) 60%, transparent); white-space: nowrap; }
+.loop-ring { container-type: inline-size; }
+.loop-node { transform: translate(-50%, -50%) rotate(var(--a)) translateY(-50cqw) rotate(calc(-1 * var(--a))); }
+.loop-packet { position: absolute; left: 50%; top: 50%; width: 12px; height: 12px; margin: -6px; border-radius: 50%; background: #fff; box-shadow: 0 0 12px #fff, 0 0 26px var(--api); animation: orbit 6s linear infinite; }
+@keyframes orbit { from { transform: rotate(0deg) translateY(-50cqw); } to { transform: rotate(360deg) translateY(-50cqw); } }
+.loop-center { position: absolute; text-align: center; max-width: 200px; pointer-events: none; }
+.loop-fps { font-size: 64px; font-weight: 800; font-family: var(--mono); background: linear-gradient(135deg, var(--cyan), var(--magenta)); -webkit-background-clip: text; background-clip: text; color: transparent; line-height: 1; }
