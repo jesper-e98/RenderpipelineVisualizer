@@ -249,7 +249,7 @@ export function createModelStage(host: HTMLElement, ctx: SlideContext, opts: Mod
 
   let lightOn = false;
   const sun = new Sprite(new SpriteMaterial({ map: glowTexture(), color: 0xfff1c4, blending: AdditiveBlending, depthWrite: false }));
-  sun.scale.setScalar(0.45);
+  sun.scale.setScalar(0.35);
   sun.visible = false;
   scene.add(sun);
 
@@ -273,7 +273,8 @@ export function createModelStage(host: HTMLElement, ctx: SlideContext, opts: Mod
       stars?.tick(t);
       if (lightOn) {
         const a = t * 0.6;
-        const lp = new Vector3(Math.cos(a) * 2.2, 1.4 + Math.sin(t * 0.4) * 0.4, Math.sin(a) * 2.2);
+        // An ellipse that stays well behind the camera's near distance (camera sits at z ≈ 3.2).
+        const lp = new Vector3(Math.cos(a) * 2.0, 1.3 + Math.sin(t * 0.4) * 0.3, Math.sin(a) * 1.3 - 0.2);
         sun.position.copy(lp);
         material.uniforms.uLightDir.value.copy(lp).normalize();
       }

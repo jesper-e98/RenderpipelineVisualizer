@@ -338,10 +338,11 @@ function stateScene(host: HTMLElement, ctx: SlideContext, concept: boolean, hook
 
   ms.onFrame((time) => {
     if (step !== 3) return;
+    const tt = motion ? time : 0.8;
     dyn.forEach((d, k) => {
-      const a = time * 0.6 + k * Math.PI;
+      const a = tt * 0.6 + k * Math.PI;
       d.position.set(Math.cos(a) * 1.7, 0.35 - k * 0.7, Math.sin(a) * 1.7);
-      d.material.opacity = 0.55 + 0.45 * Math.abs(Math.sin(time * 2.2 + k));
+      d.material.opacity = 0.55 + 0.45 * Math.abs(Math.sin(tt * 2.2 + k));
     });
   });
 

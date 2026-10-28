@@ -406,11 +406,12 @@ function cmdScene(host: HTMLElement, ctx: SlideContext, concept: boolean, cmds: 
   let step = 0;
   let presentedK = -1;
   const t0 = performance.now();
-  const now = () => 2.6 + ((performance.now() - t0) / 1000) * 1.1;
+  // Same clock as the timeline canvas (which freezes at t = 9.3 with reduced motion).
+  const now = () => 2.6 + (motion ? (performance.now() - t0) / 1000 : 9.3) * 1.1;
   ms.onFrame(() => {
     const u = ms.material.uniforms.uDrawTris.value;
     if (step !== 3) {
-      const n = Math.min(N, Math.floor(u));
+      const n = Math.min(N, Math.ceil(u));
       ms.highlightTriangle(n > 0 && n < N ? n - 1 : null, COLORS.cyan);
       hooks.drawn?.(n);
       return;

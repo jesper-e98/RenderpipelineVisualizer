@@ -403,6 +403,12 @@ function codeStream(ms: ModelStage) {
   };
 }
 
+/** The orbiting sun passes close to the camera and then fills the view; keep its on-screen size steady. */
+function steadySun(ms: ModelStage): void {
+  const sun = ms.scene.children.find((o): o is Sprite => (o as Sprite).isSprite && (o as Sprite).material.color.getHex() === 0xfff1c4);
+  ms.onFrame(() => sun?.scale.setScalar(Math.min(0.45, 0.1 * sun.position.distanceTo(ms.camera.position))));
+}
+
 /** World-space light direction → model space (the arrows live in the model's pivot). */
 function toModel(ms: ModelStage, dir: Vector3): Vector3 {
   return dir.clone().applyQuaternion(ms.pivot.quaternion.clone().invert()).normalize();
@@ -517,6 +523,8 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
   ], { className: 'sh-p' });
   const panels = [p0, p1, p2, p3];
 
+  steadySun(ms);
+
   // Live N·L / N·H at the followed point, plus arrows that follow the light.
   const L3 = new Vector3();
   const H3 = new Vector3();
@@ -570,7 +578,10 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
       nArrow.visible = true;
       lArrow.visible = s >= 1;
       hArrow.visible = s >= 2;
-      ms.lightOrbit(s === 1 || s === 2);
+      // With reduced motion the light stays at the app's LIGHT_DIR instead of orbiting.
+      const orbit = (s === 1 || s === 2) && !reducedMotion();
+      ms.lightOrbit(orbit);
+      if (!orbit && s !== 3) ms.material.uniforms.uLightDir.value.set(...LIGHT_DIR);
       if (s === 3) {
         const u = ms.material.uniforms.uLightDir.value;
         if (animate) {
@@ -579,7 +590,7 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
           ms.sweep('shaded', 'shaded', 1.5);
           ms.material.uniforms.uSweepColor.value.set(COLORS.magenta);
         } else u.set(...LIGHT_DIR);
-      } else if (s === 0) ms.material.uniforms.uLightDir.value.set(...LIGHT_DIR);
+      }
     },
     destroy() {
       stream.clear();
@@ -619,6 +630,7 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
   const strip = chainStrip(api, t);
   const ms = createModelStage(host, ctx, { autoRotate: 0.25, bloom: 0.6, bloomThreshold: 0.85, layers: { solid: 1, wire: 0 } });
   ms.overlay.classList.add('sh-ms', 'sh-concept');
+  steadySun(ms);
   const stream = codeStream(ms);
 
   // A ring of tokens around the model: the shader as text, then as AST, then as IR.

@@ -261,7 +261,7 @@ function mvpScene(host: HTMLElement, ctx: SlideContext, concept: boolean, hooks:
   ms.scene.add(ubo);
   const uboHome = new Vector3(-0.85, -0.98, 0.7);
   const slotName = concept ? 'slot 0' : api === 'opengl' ? 'binding point 0' : api === 'vulkan' ? 'set 0 · binding 0' : 'root param 0 → b0';
-  const slotPos = new Vector3(-0.95, 0.92, 0.05);
+  const slotPos = new Vector3(-0.62, 1.08, -0.3);
   const slot = ms.box(slotName, [slotPos.x, slotPos.y, slotPos.z], [0.75, 0.32, 0.3], COLORS.green);
   const beam = ms.particles(260, COLORS.green, 0.035, 'world');
   {
