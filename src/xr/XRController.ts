@@ -124,6 +124,7 @@ export class XRController {
       this.controllers.push(c);
     }
     this.buttons.forEach((b) => b.classList.toggle('on', b.dataset.mode === this.mode));
+    document.body.classList.add('xr-presenting');
     this.refresh();
   }
 
@@ -136,6 +137,7 @@ export class XRController {
     this.stage.xrHideTagged = false;
     this.stage.endXR();
     this.buttons.forEach((b) => b.classList.remove('on'));
+    document.body.classList.remove('xr-presenting');
   }
 
   private onSelect(c: XRTargetRaySpace): void {
@@ -175,7 +177,7 @@ export class XRController {
     anchor.lookAt(head.x, y, head.z);
     // Panel to the left of the model, turned towards the user.
     const left = new Vector3().crossVectors(new Vector3(0, 1, 0), dir).normalize();
-    this.panel.mesh.position.copy(anchor.position).addScaledVector(left, 0.62).addScaledVector(dir, -0.15).setY(y + 0.05);
+    this.panel.mesh.position.copy(anchor.position).addScaledVector(left, 0.72).addScaledVector(dir, -0.2).setY(y + 0.05);
     this.panel.mesh.lookAt(head.x, y + 0.05, head.z);
     this.env.position.set(head.x, 0, head.z);
     this.placed = true;

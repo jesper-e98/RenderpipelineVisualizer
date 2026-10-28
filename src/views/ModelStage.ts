@@ -5,7 +5,6 @@ import {
   BoxGeometry,
   BufferAttribute,
   BufferGeometry,
-  CanvasTexture,
   Color,
   DataTexture,
   DoubleSide,
@@ -35,7 +34,7 @@ import { meshToGeometry } from '../model/normalize';
 import type { SlideContext } from '../slides/types';
 import { DEFAULT_CAMERA, type V3 } from '../pipeline/transform';
 import { pipelineGeometry, pipelineMaterial, VIEW_MODE, type PipelineMaterial, type ViewMode } from './pipelineMaterial';
-import { COLORS, disposeScene, label, makeScene, starfield } from './three-helpers';
+import { COLORS, disposeScene, glowTexture, label, makeScene, starfield } from './three-helpers';
 import type { StageView } from './ThreeStage';
 
 export type LayerName = 'solid' | 'wire' | 'points' | 'normals';
@@ -131,22 +130,7 @@ export interface ModelStage {
   destroy(): void;
 }
 
-let glowTex: CanvasTexture | null = null;
-/** Soft round glow sprite texture (shared). */
-export function glowTexture(): CanvasTexture {
-  if (glowTex) return glowTex;
-  const c = document.createElement('canvas');
-  c.width = c.height = 64;
-  const g = c.getContext('2d')!;
-  const grad = g.createRadialGradient(32, 32, 0, 32, 32, 32);
-  grad.addColorStop(0, 'rgba(255,255,255,1)');
-  grad.addColorStop(0.25, 'rgba(255,255,255,0.8)');
-  grad.addColorStop(1, 'rgba(255,255,255,0)');
-  g.fillStyle = grad;
-  g.fillRect(0, 0, 64, 64);
-  glowTex = new CanvasTexture(c);
-  return glowTex;
-}
+export { glowTexture } from './three-helpers';
 
 const PARTICLE_VERT = /* glsl */ `
 attribute vec3 aTo;

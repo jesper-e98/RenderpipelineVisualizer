@@ -254,7 +254,7 @@ window.addEventListener('rpv:load-file', (e) => loadFile((e as CustomEvent<File>
 window.addEventListener('rpv:go', (e) => engine.go((e as CustomEvent<number>).detail, 0));
 
 // Debug/testing hook.
-(window as unknown as { rpv: unknown }).rpv = { store, engine, get derived() { return derived; } };
+(window as unknown as { rpv: unknown }).rpv = { store, engine, stage, xr, get derived() { return derived; } };
 
 renderChrome();
 engine.start();

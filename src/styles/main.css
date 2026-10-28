@@ -323,3 +323,4 @@ dl.terms dd { margin: 0; color: var(--muted); }
 .xr-controls:empty { display: none; }
 .xr-btn { font-weight: 800; letter-spacing: 0.06em; background: linear-gradient(135deg, rgba(155, 123, 255, 0.3), rgba(255, 63, 210, 0.25)); }
 .xr-btn.on { background: var(--magenta); color: #05060d; box-shadow: 0 0 18px var(--magenta); }
+body.xr-presenting .three-labels { display: none; }
