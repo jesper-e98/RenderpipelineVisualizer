@@ -330,7 +330,7 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
               buildTimeline();
               updateSide();
             }
-          }, 60);
+          }, 700); // after the step transition, so the blocking measurement does not stall it
         }
       }
       if (st === 3) buildModes();
@@ -442,7 +442,7 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
 
   const frame = (now: number) => {
     raf = requestAnimationFrame(frame);
-    const tt = (now - t0) / 1000;
+    const tt = Math.max(0, (now - t0) / 1000); // rAF time can precede t0
     g.clearRect(0, 0, W, H);
     if (W < 120 || H < 140) return;
     const avail = H - 60;

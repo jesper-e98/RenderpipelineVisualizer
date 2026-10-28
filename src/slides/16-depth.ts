@@ -269,7 +269,7 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
         <p class="dp-note">${t(
           diffOff < 10
             ? L('Den här modellen är (nästan) konvex: back-face culling räcker för att dölja baksidan. Stäng av culling också så syns felet.', 'This model is (almost) convex: back-face culling alone hides the far side. Turn culling off too and the error shows.')
-            : L('Delar som borde vara skymda (t.ex. pip eller handtag) ritas ovanpå det som ligger närmare.', 'Parts that should be hidden (e.g. spout or handle) are drawn over what is closer.'),
+            : L('Delar som borde vara skymda ritas ovanpå det som ligger närmare – vilket som hamnar överst beror bara på ritordningen.', 'Parts that should be hidden are drawn over what is closer – which one ends up on top depends only on draw order.'),
         )}</p>`;
     } else {
       side.innerHTML = `<h4>${t(L('Precision i modellens djup', 'Precision across the model'))}</h4>
@@ -400,7 +400,7 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
 
   const frame = (now: number) => {
     raf = requestAnimationFrame(frame);
-    const tt = (now - t0) / 1000;
+    const tt = Math.max(0, (now - t0) / 1000); // rAF time can precede t0
     g.clearRect(0, 0, W, H);
     const cy = (H - 56) / 2 + 4;
     const eyeX = W * 0.07;
