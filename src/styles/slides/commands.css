@@ -53,5 +53,5 @@
 .cmd-tl { position: relative; flex: 1; min-height: 120px; }
 .cmd-canvas { position: absolute; left: 0; top: 0; display: block; }
 
-.cmdc-wrap { bottom: 64px; }
+.cmdc-wrap { bottom: 78px; }
 .cmdc-canvas { position: absolute; inset: 0; }

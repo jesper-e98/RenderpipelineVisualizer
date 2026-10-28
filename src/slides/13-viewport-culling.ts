@@ -644,7 +644,7 @@ varying vec3 vN;
 void main() {
   vec3 n = -normalize(vN);
   float d = max(dot(n, uLight), 0.0);
-  vec3 c = vec3(1.0, 0.25, 0.35) * (0.25 + 0.9 * d);
+  vec3 c = vec3(0.75, 0.1, 0.16) * (0.25 + 0.9 * d);
   gl_FragColor = vec4(c, uAlpha);
 }`;
 
@@ -670,7 +670,7 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
   const plane = new Mesh(new PlaneGeometry(2, 2), new MeshBasicMaterial({ color: hdr(COLORS.violet, 0.35), transparent: true, opacity: 0.25, depthWrite: false }));
   const border = new LineLoop(
     new BufferGeometry().setFromPoints([new Vector3(-1, -1, 0), new Vector3(1, -1, 0), new Vector3(1, 1, 0), new Vector3(-1, 1, 0)]),
-    new LineBasicMaterial({ color: hdr(COLORS.green, 2), transparent: true }),
+    new LineBasicMaterial({ color: hdr(COLORS.green, 3.2), transparent: true, depthTest: false }),
   );
   const gridPts: Vector3[] = [];
   for (let i = 1; i < 16; i++) gridPts.push(new Vector3(-1 + i / 8, -1, 0), new Vector3(-1 + i / 8, 1, 0));
@@ -692,7 +692,7 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
 
   /* ---- Step 1: winding of one triangle ---- */
   const wGroup = new Group();
-  wGroup.position.y = 0.3;
+  wGroup.position.y = 0.45;
   scene.add(wGroup);
   const triPts = [new Vector3(-1.05, -0.7, 0), new Vector3(1.05, -0.7, 0), new Vector3(0, 0.95, 0)]; // CCW seen from +Z
   const triFill = new Mesh(new BufferGeometry().setFromPoints(triPts), new MeshBasicMaterial({ color: hdr(COLORS.cyan, 0.6), transparent: true, opacity: 0.25, side: FrontSide, depthWrite: false, blending: AdditiveBlending }));
@@ -715,7 +715,7 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
     return sp;
   });
   const windTag = label('', 'vc-tag big');
-  windTag.position.set(0, -1.0, 0);
+  windTag.position.set(0, -1.2, 0);
   wGroup.add(windTag);
 
   /* ---- Steps 2–3: the model, front vs back faces ---- */
@@ -728,7 +728,7 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
   const frontMat = new ShaderMaterial({
     vertexShader: FRONT_VS,
     fragmentShader: FRONT_FS,
-    uniforms: { uColor: { value: new Color(0.95, 0.55, 0.25) }, uLight: { value: light }, uAlpha: { value: 1 } },
+    uniforms: { uColor: { value: new Color(0.62, 0.3, 0.11) }, uLight: { value: light }, uAlpha: { value: 1 } },
     transparent: true,
     side: FrontSide,
   });

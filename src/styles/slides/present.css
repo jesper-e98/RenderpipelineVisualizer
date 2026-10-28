@@ -17,7 +17,8 @@
 .pr-block { filter: drop-shadow(0 0 5px rgba(255, 255, 255, 0.2)); }
 .pr-arrow { stroke-width: 1.5; opacity: 0.8; }
 .pr-dot { filter: drop-shadow(0 0 6px currentColor); }
-.pr-playhead { stroke: #fff; stroke-width: 2; filter: drop-shadow(0 0 6px #fff); }
+.pr-playhead { stroke: #fff; stroke-width: 2; }
+.pr-playhead.glow { stroke: rgba(255, 255, 255, 0.22); stroke-width: 7; }
 .pr-modes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; align-items: center; padding: 0 6px; }
 .pr-mini { display: grid; gap: 6px; justify-items: center; text-align: center; min-width: 0; }
 .pr-mini-screen { position: relative; width: 100%; aspect-ratio: 16 / 10; padding: 6px; border-radius: 10px; background: linear-gradient(160deg, #1a1f3d, #0a0c1c); border: 1px solid rgba(140, 160, 255, 0.35); box-shadow: 0 0 26px rgba(56, 225, 255, 0.15); }

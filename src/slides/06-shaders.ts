@@ -118,6 +118,9 @@ void main() {
   };
 }
 
+/** spirv-dis style name of a float constant, e.g. %float_0_4472. */
+const cname = (x: number) => `%float_${f4(x).replace('.', '_')}`;
+
 /** Abridged SPIR-V disassembly of shade.frag (what spirv-dis prints, shortened). */
 function spirvExcerpt(api: ApiId): string {
   const gl = api === 'opengl';
@@ -133,8 +136,8 @@ function spirvExcerpt(api: ApiId): string {
                OpDecorate %outColor Location 0
      %v3float = OpTypeVector %float 3
     %float_48 = OpConstant %float ${SHININESS}
-         %17 = OpConstantComposite %v3float ${LIGHT_DIR.map(f4).join(' ')} ; LIGHT_DIR
-         %21 = OpConstantComposite %v3float ${HALF.map(f4).join(' ')} ; h (folded)
+         %17 = OpConstantComposite %v3float ${LIGHT_DIR.map(cname).join(' ')} ; LIGHT_DIR
+         %21 = OpConstantComposite %v3float ${HALF.map(cname).join(' ')} ; h (folded)
        %main = OpFunction %void None %3
           %5 = OpLabel
          %12 = OpLoad %v3float %vNormal
@@ -246,7 +249,7 @@ function hexOf(str: string): string {
   let x = 2166136261;
   for (let i = 0; i < str.length; i++) x = Math.imul(x ^ str.charCodeAt(i), 16777619);
   const w = (x >>> 0).toString(16).padStart(8, '0');
-  return `${w.slice(0, 4)} ${w.slice(4)} · ${str.split(' ')[0]}`;
+  return `${w.slice(0, 4)} ${w.slice(4)}`;
 }
 
 /** Allow long camelCase API names to wrap between words. */
@@ -455,9 +458,9 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
           h('dt', { text: 'spec' }),
           h('dd.glow-magenta', { text: sh.specular.toFixed(4) }),
           h('dt', { text: 'n' }),
-          h('dd', { text: sh.n.map((x) => x.toFixed(3)).join(', ') }),
+          h('dd', { text: sh.n.map((x) => x.toFixed(3)).join(', '), style: { gridColumn: 'span 3' } }),
           h('dt', { text: 'out' }),
-          h('dd', {}, [h('span.sh-swatch', { style: { background: `rgb(${rgb.join(',')})` } }), ` ${sh.color.map((c) => c.toFixed(3)).join(', ')}`]),
+          h('dd', { style: { gridColumn: 'span 3' } }, [h('span.sh-swatch', { style: { background: `rgb(${rgb.join(',')})` } }), ` ${sh.color.map((c) => c.toFixed(3)).join(', ')}`]),
         ]),
       ]),
     ], 'sh-card'),
@@ -541,9 +544,9 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
   brackets.append(bRun);
 
   // IR "file" badge and the machine-code grid.
-  const file = h('div.shc-file', {}, [h('span', { text: api === 'd3d12' ? '.cso' : api === 'vulkan' ? '.spv' : 'IR' }), h('small', { text: t(L('portabel', 'portable')) })]);
+  const file = h('div.shc-file', {}, [h('span', { text: api === 'd3d12' ? '.cso' : api === 'vulkan' ? '.spv' : 'IR' }), h('small', { text: api === 'opengl' ? t(L('dold i drivern', 'inside driver')) : t(L('portabel', 'portable')) })]);
   stage.append(file);
-  const GRID = 12;
+  const GRID = 8;
   const gridCells = Array.from({ length: GRID }, (_, i) => h('span.shc-cell', { text: (((i + 1) * 2654435761) >>> 0).toString(16).padStart(8, '0').slice(0, 4) }));
   const grid = h('div.shc-grid', {}, gridCells);
   stage.append(grid);
@@ -567,7 +570,7 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
     const sh = Math.max(120, Math.min(210, H - Math.max(12, H * 0.08) - 112));
     const top = Math.max(12, H * 0.08);
     const sx = stations.map((_, i) => 16 + i * (sw + gap));
-    geo = { W, H, sx, sw, y: top + sh * 0.4, top, sh };
+    geo = { W, H, sx, sw, y: top + sh * 0.46, top, sh };
     stations.forEach((s, i) => gsap.set(s, { x: sx[i], y: top, width: sw, height: sh }));
     gsap.set(track, { x: sx[0] + sw / 2, y: geo.y, width: sx[4] - sx[0] });
     const by = top + sh + 8;
@@ -575,8 +578,8 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
     if (buildCount) gsap.set(bBuild, { x: sx[0], y: by, width: bw });
     gsap.set(bRun, { x: sx[buildCount], y: by, width: sx[4] + sw - sx[buildCount] });
     gsap.set(file, { x: sx[2] + sw / 2 - 34, y: top + sh - 56 });
-    gsap.set(grid, { x: sx[4] + 8, y: top + sh * 0.7, width: sw - 16 });
-    gsap.set(vendors, { x: sx[3] + 6, y: top + sh * 0.7, width: sw - 12 });
+    gsap.set(grid, { x: sx[4] + 8, y: top + sh * 0.72, width: sw - 16 });
+    gsap.set(vendors, { x: sx[3] + 6, y: top + sh * 0.73, width: sw - 12 });
   };
 
   const maxStation = () => [0, 2, 2, 4][step];

@@ -205,7 +205,7 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
     ),
   };
   const mkRow = (items: [string, string][], cls: string) =>
-    h(`div.ds-chain.${cls}`, {}, items.flatMap(([a, b], i) => [i ? h('div.ds-wire', {}, [h('span')]) : null, h('div.ds-node', {}, [h('div.t', { text: a }), h('div.s', { text: b })])]).filter(Boolean) as HTMLElement[]);
+    h(`div.ds-chain.${cls}`, {}, items.flatMap(([a, b], i) => [i ? h('div.ds-wire', {}, [h('span')]) : null, h('div.ds-node', {}, [h('div.t', { text: a.replace(/([a-z])([A-Z])/g, '$1\u200b$2') }), h('div.s', { text: b })])]).filter(Boolean) as HTMLElement[]);
   const mainRow = mkRow(ch.main, 'main');
   const slotIdx = api === 'opengl' ? 2 : 1;
   mainRow.querySelectorAll('.ds-node')[slotIdx]?.classList.add('slot');
@@ -270,7 +270,8 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
   const ops = ['×', '×', '='].map((o) => h('div.dsc-op', { text: o }));
   const strip = h('div.dsc-strip', {}, [h('span.dsc-strip-l', { text: `${UBO_SIZE} B` })]);
   const align = h('div.dsc-align', { text: api === 'd3d12' ? t(L('256 B-gräns ✓', '256 B boundary ✓')) : 'std140 ✓' });
-  const slotLabel = (i: number) => (api === 'opengl' ? `binding ${i}` : api === 'vulkan' ? `set 0 · binding ${i}` : `root param ${i}`);
+  const slotLabel = (i: number) => (api === 'd3d12' ? `root param ${i}` : `binding ${i}`);
+  const rack = h('div.dsc-rack', { text: api === 'opengl' ? 'binding points' : api === 'vulkan' ? 'descriptor set 0' : 'root signature' });
   const slots = [0, 1, 2, 3].map((i) => h('div.dsc-slot', {}, [h('span.dsc-num', { text: String(i) }), h('span.dsc-sl', { text: slotLabel(i) })]));
   const decl = api === 'd3d12' ? 'cbuffer Transforms : register(b0)' : api === 'vulkan' ? 'layout(set = 0, binding = 0) uniform Transforms' : 'layout(std140, binding = 0) uniform Transforms';
   const shaderLines = [decl, '{ mat4 model, view, proj, mvp; };', api === 'd3d12' ? 'o.pos = mul(mvp, float4(p, 1));' : 'gl_Position = mvp * vec4(p, 1.0);'];
@@ -284,7 +285,7 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
       h('span.y', { text: a.id === 'vulkan' ? 'y ↓' : 'y ↑' }),
     ]);
   }));
-  stage.append(...tiles, ...ops, strip, align, ...slots, shader, variants);
+  stage.append(...tiles, ...ops, strip, align, rack, ...slots, shader, variants);
 
   let step = 0;
   let wirePaths: SVGPathElement[] = [];
@@ -305,15 +306,15 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
     const th = 46;
     const tx0 = 20;
     const ty = 26;
-    const slotX = W * 0.6;
+    const slotX = W * 0.47;
     const slotW = Math.min(150, W * 0.16);
     const slotH = 30;
-    const slotY0 = 22;
+    const slotY0 = 30;
     const slotGap = Math.max(36, (H - 40) / 4);
-    const shX = slotX + slotW + 46;
+    const shX = slotX + slotW + 40;
     const shW = W - shX - 14;
     const stripW = Math.min(280, W * 0.3);
-    const stripX = step >= 3 ? slotX - stripW - 30 : W * 0.25;
+    const stripX = step >= 3 ? slotX - stripW - 30 : 20;
     const stripY = step >= 3 ? slotY0 + (slotH - th) / 2 : H * 0.62;
     const segW = stripW / 4;
     const go = (el: Element, p: gsap.TweenVars, delay = 0) => (animate ? gsap.to(el, { ...p, duration: dur(0.8), delay, ease: 'power3.inOut' }) : gsap.set(el, p));
@@ -329,6 +330,7 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
     go(strip, { x: stripX - 4, y: stripY - 4, width: stripW + 4, height: th + 8, opacity: step >= 2 ? 1 : 0 });
     go(align, { x: stripX, y: stripY + th + 10, opacity: step === 2 ? 1 : 0 });
     slots.forEach((sl, i) => gsap.set(sl, { x: slotX, y: slotY0 + i * slotGap, width: slotW, height: slotH }));
+    gsap.set(rack, { x: slotX, y: slotY0 - 20, width: slotW });
     gsap.set(shader, { x: shX, y: slotY0 - 8, width: shW });
     gsap.set(variants, { x: tx0, y: ty + th + 26, width: Math.min(360, W * 0.42) });
     variants.style.opacity = step === 1 ? '1' : '0';
@@ -336,7 +338,7 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
     // Wires: every slot to the shader, slot 0 to the declaration line.
     svg.setAttribute('viewBox', `0 0 ${W} ${stage.clientHeight}`);
     svg.replaceChildren();
-    const declY = slotY0 + 8 + 24;
+    const declY = slotY0 - 8 + 8 + 18 + 8;
     wirePaths = slots.map((_, i) => {
       const y1 = slotY0 + i * slotGap + slotH / 2;
       const x1 = slotX + slotW;

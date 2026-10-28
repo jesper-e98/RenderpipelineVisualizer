@@ -83,7 +83,7 @@
 .dsc-op { position: absolute; left: 0; top: 0; font-size: 20px; font-weight: 800; color: var(--muted); }
 .dsc-strip { position: absolute; left: 0; top: 0; border-radius: 10px; border: 1px dashed var(--line-strong); opacity: 0; z-index: 2; }
 .dsc-stage[data-step='3'] .dsc-strip { border: 1px solid var(--api); box-shadow: 0 0 22px color-mix(in srgb, var(--api) 45%, transparent); }
-.dsc-strip-l { position: absolute; right: 6px; top: -18px; font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
+.dsc-strip-l { position: absolute; right: 6px; bottom: -17px; font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
 .dsc-align { position: absolute; left: 0; top: 0; font-family: var(--mono); font-size: 11px; color: var(--green); text-shadow: 0 0 8px var(--green); opacity: 0; }
 .dsc-slot { position: absolute; left: 0; top: 0; display: flex; align-items: center; gap: 8px; padding: 0 8px; border-radius: 8px; border: 1px solid var(--line-strong); background: rgba(8, 10, 24, 0.7); transition: border-color 0.4s, box-shadow 0.4s; }
 .dsc-num { display: grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; border: 1px solid var(--line-strong); font-family: var(--mono); font-size: 11px; font-weight: 800; color: var(--muted); }
@@ -93,7 +93,7 @@
 .dsc-slot.lit .dsc-sl { color: var(--amber); }
 .dsc-shader { position: absolute; left: 0; top: 0; display: grid; gap: 3px; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line-strong); background: rgba(8, 10, 24, 0.75); transition: border-color 0.4s, box-shadow 0.4s; }
 .dsc-sh-h { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--dim); font-weight: 700; }
-.dsc-line { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dsc-line { font-size: 10.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dsc-shader.lit { border-color: var(--magenta); box-shadow: 0 0 22px rgba(255, 63, 210, 0.35); }
 .dsc-shader.lit .dsc-line.decl { color: #fff; text-shadow: 0 0 10px var(--magenta); }
 .dsc-variants { position: absolute; left: 0; top: 0; display: grid; gap: 6px; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); background: rgba(8, 10, 24, 0.7); transition: opacity 0.4s; }
@@ -108,3 +108,4 @@
 @media (prefers-reduced-motion: reduce) { .ds-wire span, .dsc-wire.live { animation: none; } }
 
 .ds-bind-note { margin-top: 10px; padding: 8px 12px; border-radius: 10px; border: 1px solid var(--line); background: rgba(8, 10, 24, 0.55); font-size: 12px; }
+.dsc-rack { position: absolute; left: 0; top: 0; font-size: 10px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--dim); }

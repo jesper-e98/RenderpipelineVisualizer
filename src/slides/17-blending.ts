@@ -107,6 +107,22 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
     return best >= 0 ? best : Math.floor(ty) * W + Math.floor(tx);
   };
   const probeA = nearestModel(bx0 + 0.72 * bw, by0 + 0.45 * bh, [A]);
+  const probeBg = (() => {
+    // The darkest pixel under both panes: additive results stay below 1 (no clamping) there.
+    let best = -1;
+    let bd = Infinity;
+    for (let p = 0; p < W * H; p++) {
+      const x = p % W;
+      const y = Math.floor(p / W);
+      if (!inGlass(A, x, y) || !inGlass(B, x, y)) continue;
+      const d = base[p * 4] + base[p * 4 + 1] + base[p * 4 + 2];
+      if (d < bd) {
+        bd = d;
+        best = p;
+      }
+    }
+    return best;
+  })();
   const probeAB = nearestModel((Math.max(A.x0, B.x0) + Math.min(A.x1, B.x1)) / 2, (Math.max(A.y0, B.y0) + Math.min(A.y1, B.y1)) / 2, [A, B]);
 
   // Step-2/3 crop: region covering the model and both panes.
@@ -188,18 +204,18 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
         const order = i === 0 ? [A, B] : [B, A];
         order.forEach((g) => rim(g, ox - cx0, LBL - cy0));
         pc.text(names[i], ox + CW / 2, LBL / 2, '#e8ebff', 12, 'center');
-        mark(hover ?? probeAB, ox - cx0, LBL - cy0);
+        mark(hover ?? (step === 3 && probeBg >= 0 ? probeBg : probeAB), ox - cx0, LBL - cy0);
       });
     }
   };
   pc.onResize(draw);
 
   const sw = (c: readonly number[], label: string, a?: number) =>
-    `<div class="bl-sw"><i style="background:${css(c)}${a !== undefined ? `;opacity:${0.35 + a * 0.65}` : ''}"></i><span>${label}</span><b>${vec(c)}${a !== undefined ? ` α=${a}` : ''}</b></div>`;
+    `<div class="bl-sw"><i style="background:${css(c)}${a !== undefined ? `;opacity:${0.35 + a * 0.65}` : ''}"></i><span>${label}${a !== undefined ? ` <em>α ${a}</em>` : ''}</span><b>${vec(c)}</b></div>`;
   const row = (k: string, v: string, cls = '') => `<div class="bl-row"><span>${k}</span><b class="${cls}">${v}</b></div>`;
 
   const updateSide = () => {
-    const p = hover ?? (step <= 1 ? probeA : probeAB);
+    const p = hover ?? (step <= 1 ? probeA : step === 3 && probeBg >= 0 ? probeBg : probeAB);
     const px = p % W;
     const py = Math.floor(p / W);
     const dst = dstAt(p);
@@ -328,6 +344,7 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
     tl = gsap.timeline();
     const d = (s: number) => (animate ? dur(s) : 0);
     scene.dataset.step = String(step);
+    delete readout.dataset.on;
     gsap.set([opaque, ...panes.map((p) => p.el)], { clearProps: 'zIndex' });
     tl.to(opaque, { xPercent: step === 0 ? 0 : 140, opacity: step === 0 ? 1 : 0, duration: d(0.7), ease: 'power3.inOut' }, 0);
     tl.to(panes[0].el, { xPercent: step >= 1 ? 0 : 160, opacity: step >= 1 ? 1 : 0, duration: d(0.8), ease: 'power3.out' }, 0);
@@ -356,8 +373,11 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
       swap.to({}, { duration: 2.2 });
       tl.add(swap, 0);
     } else {
-      const both = add(panes[1].rgb, 0.5, add(panes[0].rgb, 0.5, objRgb));
-      readout.innerHTML = chip(both, 'A+B') + chip(add(panes[0].rgb, 0.5, bg), t(L('A på bakgrund', 'A on background')));
+      // On the background (the overlap on the object saturates to white).
+      readout.innerHTML =
+        chip(add(panes[1].rgb, 0.5, add(panes[0].rgb, 0.5, bg)), t(L('A, sedan B', 'A, then B'))) +
+        chip(add(panes[0].rgb, 0.5, add(panes[1].rgb, 0.5, bg)), t(L('B, sedan A', 'B, then A'))) +
+        chip(add(panes[1].rgb, 0.5, add(panes[0].rgb, 0.5, objRgb)), t(L('på objektet (klampat)', 'on the object (clamped)')));
     }
     caption.innerHTML = t(captions[step]);
     if (animate) caption.animate([{ opacity: 0, transform: 'translateY(8px)' }, { opacity: 1, transform: 'none' }], { duration: dur(0.4) * 1000, easing: 'ease-out' });
@@ -454,8 +474,8 @@ pso.DepthStencilState.DepthWriteMask  = D3D12_DEPTH_WRITE_MASK_ZERO;
     },
     d3d12: {
       note: L(
-        'I D3D12 heter steget <i>Output Merger</i>. Blandningen ligger i PSO:ns D3D12_BLEND_DESC med en D3D12_RENDER_TARGET_BLEND_DESC per render target (upp till 8).',
-        'In D3D12 the stage is the <i>Output Merger</i>. Blending lives in the PSO\'s D3D12_BLEND_DESC with one D3D12_RENDER_TARGET_BLEND_DESC per render target (up to 8).',
+        'I D3D12 heter steget Output Merger (OM). Blandningen ligger i PSO:ns D3D12_BLEND_DESC med en D3D12_RENDER_TARGET_BLEND_DESC per render target (upp till 8).',
+        'In D3D12 the stage is the Output Merger (OM). Blending lives in the PSO\'s D3D12_BLEND_DESC with one D3D12_RENDER_TARGET_BLEND_DESC per render target (up to 8).',
       ),
       code: [{ lang: 'cpp', src: dx, highlight: [[1], [2, 3, 4, 5, 6, 7, 8, 10], [15], [16]] }],
       terms: [

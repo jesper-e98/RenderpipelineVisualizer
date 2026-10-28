@@ -157,15 +157,15 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
     if (step === 0) {
       side.innerHTML = `<h4>${t(L('Indata till ett fragment', 'Inputs of one fragment'))}</h4>
         <div class="fs-code">${io}</div>
-        ${row(t(L('vNormal (interpolerad)', 'vNormal (interpolated)')), vec(raw), 'c-nrm')}
+        ${row('vNormal', vec(raw), 'c-nrm')}
         ${row('|vNormal|', f3(Math.hypot(...raw)), Math.abs(Math.hypot(...raw) - 1) > 0.001 ? 'glow-amber' : '')}
-        ${row('n = normalize(vNormal)', vec(terms.n), 'c-nrm')}
-        ${row(t(L('vikter b0 b1 b2', 'weights b0 b1 b2')), frag.bary.map((b) => f3(b, 2)).join(' '))}
+        ${row('n = normalize', vec(terms.n), 'c-nrm')}
+        ${row('b0 b1 b2', frag.bary.map((b) => f3(b, 2)).join(' '))}
         <p class="fs-note">${t(L('Interpolerade normaler blir kortare än 1 mellan hörnen – därför normaliserar shadern igen.', 'Interpolated normals get shorter than 1 between the corners – that is why the shader normalizes again.'))}</p>`;
     } else if (step === 1) {
       side.innerHTML = `<h4>${t(L('Blinn–Phong, steg för steg', 'Blinn–Phong, step by step'))}</h4>
         ${row('L', vec(LIGHT_DIR), 'glow-amber')}
-        ${row('H = norm(L + V)', vec(HALF), 'glow-cyan')}
+        ${row('H', vec(HALF), 'glow-cyan')}
         ${bar('N·L', terms.diffuse, '#ffb547')}
         ${bar('N·H', nh, '#38e1ff')}
         ${bar(`(N·H)<sup>${SHININESS}</sup>`, terms.specular, '#ffffff', terms.specular < 0.001 ? terms.specular.toExponential(1) : f3(terms.specular))}
@@ -513,8 +513,8 @@ fsStage.pName  = "main";
     },
     d3d12: {
       note: L(
-        'I D3D heter det <i>pixel shader</i>. HLSL kompileras med dxc till DXIL (ps_6_x), och SV_Target anger vilket render target färgen hamnar i.',
-        'In D3D it is called the <i>pixel shader</i>. HLSL is compiled with dxc to DXIL (ps_6_x), and SV_Target says which render target the color goes to.',
+        'I D3D heter det pixel shader. HLSL kompileras med dxc till DXIL (ps_6_x), och SV_Target anger vilket render target färgen hamnar i.',
+        'In D3D it is called the pixel shader. HLSL is compiled with dxc to DXIL (ps_6_x), and SV_Target says which render target the color goes to.',
       ),
       code: [
         { lang: 'hlsl', title: L('Pixel shader', 'Pixel shader'), src: hlsl, highlight: hlHl },

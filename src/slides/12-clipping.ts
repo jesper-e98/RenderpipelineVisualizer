@@ -106,7 +106,7 @@ interface ZoomCase {
   camDist: number;
 }
 
-const ZOOM = 0.42;
+const ZOOM = 0.3;
 const DRAW_CAP = 8000;
 
 function zoomCase(ctx: SlideContext): ZoomCase {
@@ -222,8 +222,11 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
     // Two plots of homogeneous clip space: (x, w) and (z, w). Inside = between the lines.
     const pad = 26;
     const pw = (w - pad * 3) / 2;
-    const ph = hh - pad * 2 - 18;
-    const wMax = Math.max(...sc.map((p) => p[3]), ...allClip.map((p) => p[3])) * 1.12;
+    const ph = hh - pad * 2 - 40;
+    // Zoom the w axis onto where the vertices are (w = distance in front of the camera).
+    const ws = [...sc.map((p) => p[3]), ...allClip.map((p) => p[3])];
+    const wMax = Math.max(...ws) * 1.08;
+    const wLo = Math.max(0, Math.min(...ws) * 0.55);
     const plots = [
       { title: 'x  vs  w', comp: 0, lo: (wv: number) => -wv, hi: (wv: number) => wv, range: [-wMax, wMax] },
       { title: 'z  vs  w', comp: 2, lo: (wv: number) => (api === 'opengl' ? -wv : 0), hi: (wv: number) => wv, range: [api === 'opengl' ? -wMax : -wMax * 0.35, wMax] },
@@ -232,17 +235,17 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
       const ox = pad + i * (pw + pad);
       const oy = pad + 10;
       const X = (v: number) => ox + ((v - pl.range[0]) / (pl.range[1] - pl.range[0])) * pw;
-      const Y = (wv: number) => oy + ph - (wv / wMax) * ph;
+      const Y = (wv: number) => oy + ph - ((wv - wLo) / (wMax - wLo)) * ph;
       g.fillStyle = 'rgba(4,6,16,0.7)';
       g.fillRect(ox, oy, pw, ph);
       g.strokeStyle = 'rgba(140,160,255,0.25)';
       g.strokeRect(ox + 0.5, oy + 0.5, pw, ph);
       // Inside region.
       g.beginPath();
-      g.moveTo(X(pl.lo(0)), Y(0));
+      g.moveTo(X(pl.lo(wLo)), Y(wLo));
       g.lineTo(X(pl.lo(wMax)), Y(wMax));
       g.lineTo(X(pl.hi(wMax)), Y(wMax));
-      g.lineTo(X(pl.hi(0)), Y(0));
+      g.lineTo(X(pl.hi(wLo)), Y(wLo));
       g.closePath();
       g.fillStyle = 'rgba(92,240,143,0.08)';
       g.fill();
@@ -252,9 +255,9 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
       g.strokeStyle = '#ffb547';
       g.lineWidth = 1.6;
       g.beginPath();
-      g.moveTo(X(pl.lo(0)), Y(0));
+      g.moveTo(X(pl.lo(wLo)), Y(wLo));
       g.lineTo(X(pl.lo(wMax)), Y(wMax));
-      g.moveTo(X(pl.hi(0)), Y(0));
+      g.moveTo(X(pl.hi(wLo)), Y(wLo));
       g.lineTo(X(pl.hi(wMax)), Y(wMax));
       g.stroke();
       g.restore();
@@ -292,14 +295,17 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
       g.fillStyle = '#646d94';
       g.textAlign = 'center';
       g.fillText(i === 0 ? 'x →' : 'z →', ox + pw / 2, oy + ph + 14);
+      g.textAlign = 'left';
+      g.fillText(`w ${wLo.toFixed(1)}`, ox + 4, oy + ph - 4);
+      g.fillText(`w ${wMax.toFixed(1)} ↑`, ox + pw / 2 + 4, oy + 26);
     });
   };
 
   const ndcFrame = (w: number, hh: number, extent: number) => {
-    const vh = Math.min((hh - 40) / (2 * extent), (w - 20) / (2 * extent * ASPECT));
+    const vh = Math.min((hh - 60) / (2 * extent), (w - 70) / (2 * extent * ASPECT));
     const vw = vh * ASPECT;
     const cx = w / 2;
-    const cy = hh / 2 + 6;
+    const cy = hh / 2 - 8;
     return {
       X: (x: number) => cx + x * vw,
       Y: (y: number) => cy + (yDown ? y : -y) * vh,
@@ -818,7 +824,8 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
   const guard = new LineLoop(gbGeo, new LineBasicMaterial({ color: hdr(COLORS.violet, 1.6), transparent: true, opacity: 0 }));
   root.add(guard);
 
-  camera.position.set(7.0, 2.9, 2.4);
+  root.scale.setScalar(0.7);
+  camera.position.set(4.6, 3.1, 6.4);
   camera.lookAt(0, 0, 0);
 
   const P = { cut: 0, morph: 0, guard: 0, discard: 0 };

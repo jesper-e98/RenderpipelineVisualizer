@@ -60,7 +60,7 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
   // Three consecutive "frames" (the model keeps turning) for the swap and present-mode views.
   const FW = 160;
   const FH = 100;
-  const frames = [0, 1, 2].map((k) => encodeSrgb(ctx.derived.render(api, FW, FH, { rotY: SHOWCASE_ROT_Y + k * 0.22 }).color));
+  const frames = [0, 1, 2].map((k) => encodeSrgb(ctx.derived.render(api, FW, FH, { rotY: SHOWCASE_ROT_Y + k * 0.45 }).color));
 
   const screen = h('div.pr-screen');
   const scan = h('div.pr-scan');
@@ -117,11 +117,11 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
   };
   pc.onResize(draw);
 
-  // Linear → sRGB numbers for one pixel on the model.
+  // Linear → sRGB numbers for one mid-tone pixel on the model.
   let probe = (IH >> 1) * IW + (IW >> 1);
   for (let best = Infinity, p = 0; p < IW * IH; p++) {
     if (final.depth[p] >= 1) continue;
-    const d = Math.abs((p % IW) - IW / 2) + Math.abs(Math.floor(p / IW) - IH / 2);
+    const d = Math.abs(final.color[p * 4] / 255 - 0.42) + Math.abs(final.color[p * 4 + 2] / 255 - 0.1);
     if (d < best) {
       best = d;
       probe = p;
@@ -199,7 +199,7 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
     const total = intervals * REFRESH_MS;
     const VW = 620;
     const VH = 250;
-    const m = { l: 92, r: 12, t: 26, b: 30 };
+    const m = { l: 92, r: 26, t: 26, b: 30 };
     const T = (ms: number) => m.l + (ms / total) * (VW - m.l - m.r);
     const rows = [
       { y: 60, name: t(L('Rendering', 'Rendering')) },
@@ -235,16 +235,19 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
       start = v; // double buffering: the next frame can start once this one is flipped on
       k++;
     }
+    const glow = s('line', { x1: T(0), x2: T(0), y1: m.t - 6, y2: VH - m.b, class: 'pr-playhead glow' });
     const playhead = s('line', { x1: T(0), x2: T(0), y1: m.t - 6, y2: VH - m.b, class: 'pr-playhead' });
-    els.push(playhead);
+    els.push(glow, playhead);
     const svg = s('svg', { viewBox: `0 0 ${VW} ${VH}`, class: 'pr-tl-svg', preserveAspectRatio: 'xMidYMid meet' }, els);
     timeline.replaceChildren(svg);
     const t0 = performance.now();
     const tick = () => {
       const p = ((performance.now() - t0) / (total * 12)) % 1; // 12× slow motion
       const x = T(p * total);
-      playhead.setAttribute('x1', String(x));
-      playhead.setAttribute('x2', String(x));
+      for (const l of [glow, playhead]) {
+        l.setAttribute('x1', String(x));
+        l.setAttribute('x2', String(x));
+      }
       raf = requestAnimationFrame(tick);
     };
     cancelAnimationFrame(raf);
@@ -441,6 +444,7 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
     raf = requestAnimationFrame(frame);
     const tt = (now - t0) / 1000;
     g.clearRect(0, 0, W, H);
+    if (W < 120 || H < 140) return;
     const avail = H - 60;
     const refreshes = Math.floor(tt / REF);
     const scanP = (tt % REF) / REF;

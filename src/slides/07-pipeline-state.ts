@@ -115,7 +115,7 @@ function stateRows(ctx: SlideContext): StateRow[] {
     {
       what: L('Resurslayout', 'Resource layout'),
       value: 'UBO/CBV @ 0',
-      spell: { opengl: 'layout(binding = 0) uniform Transforms', vulkan: 'layout = pipelineLayout   // set 0: 1 UBO', d3d12: 'pRootSignature = rootSig   // b0: root CBV' },
+      spell: { opengl: 'glBindBufferBase(GL_UNIFORM_BUFFER, 0, ubo)', vulkan: 'layout = pipelineLayout   // set 0: 1 UBO', d3d12: 'pRootSignature = rootSig   // b0: root CBV' },
       kind: B,
     },
     {

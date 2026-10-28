@@ -65,13 +65,31 @@ export function apiPanel(spec: ApiPanelSpec, ctx: SlideContext): { el: HTMLEleme
     spec.driver ? h('span.chip.driver', {}, [h('b', { text: t(UI.driverDoes) }), ' ', t(spec.driver)]) : null,
   ]);
 
+  const toggle = h('button.api-toggle', { attrs: { 'aria-expanded': 'true' } });
   const el = h('div.api-panel.glass', { dataset: { api } }, [
-    h('div.api-head', {}, [h('span.api-badge', { text: apiLabel(api) }), h('p.api-note', { text: t(spec.note) })]),
+    h('div.api-head', {}, [h('span.api-badge', { text: apiLabel(api) }), h('p.api-note', { text: t(spec.note) }), toggle]),
     chips,
     tabBar,
     bodyHost,
   ]);
   if (tabs.length) select(0);
+
+  // Collapsing the panel gives the visual more room; the choice is remembered across slides.
+  const setCollapsed = (c: boolean) => {
+    el.classList.toggle('collapsed', c);
+    toggle.setAttribute('aria-expanded', String(!c));
+    toggle.textContent = c ? `▴ ${t(UI.code)}` : `▾ ${t(UI.hideCode)}`;
+  };
+  setCollapsed(readCollapsed());
+  toggle.addEventListener('click', () => {
+    const c = !el.classList.contains('collapsed');
+    setCollapsed(c);
+    try {
+      localStorage.setItem('rpv.panelCollapsed', c ? '1' : '0');
+    } catch {
+      /* optional preference */
+    }
+  });
 
   return {
     el,
@@ -86,8 +104,17 @@ export function apiPanel(spec: ApiPanelSpec, ctx: SlideContext): { el: HTMLEleme
       const first = tabs[active]?.lines?.find((l) => l.classList.contains('mark'));
       if (first) {
         const pre = tabs[active].body;
-        pre.scrollTo({ top: Math.max(0, first.offsetTop - pre.clientHeight / 3), behavior: 'smooth' });
+        const top = first.getBoundingClientRect().top - pre.getBoundingClientRect().top + pre.scrollTop;
+        pre.scrollTo({ top: Math.max(0, top - pre.clientHeight / 3), behavior: 'smooth' });
       }
     },
   };
+}
+
+function readCollapsed(): boolean {
+  try {
+    return localStorage.getItem('rpv.panelCollapsed') === '1';
+  } catch {
+    return false;
+  }
 }

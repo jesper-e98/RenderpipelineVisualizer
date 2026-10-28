@@ -43,6 +43,7 @@ export const UI = {
   stageGpuProg: L('GPU – programmerbar', 'GPU – programmable'),
   stageGpuFixed: L('GPU – fast funktion', 'GPU – fixed function'),
   code: L('Kod', 'Code'),
+  hideCode: L('Dölj kod', 'Hide code'),
   terms: L('Begrepp', 'Terms'),
   keysHint: L('← → bläddra · M byt läge · 1/2/3 byt API', '← → navigate · M switch mode · 1/2/3 switch API'),
 };

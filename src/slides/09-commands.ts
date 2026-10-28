@@ -146,7 +146,7 @@ function drawTimeline(g: CanvasRenderingContext2D, x0: number, y0: number, W: nu
   const px = (W - labelW - 8) / (W < 560 ? 3.4 : 5.4);
   const nowX = x0 + W - 26;
   const X = (t: number) => nowX - (now - t) * px;
-  const laneH = Math.max(18, Math.min(44, (H - 40) / 2.7));
+  const laneH = Math.max(18, Math.min(54, (H - 40) / 2.7));
   const yCpu = y0 + 10;
   const yQ = yCpu + laneH + 10;
   const qH = laneH * 0.5;

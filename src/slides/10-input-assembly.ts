@@ -522,7 +522,7 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
   const { t } = ctx;
   const { scene, camera } = makeScene();
   camera.position.set(0, 0.35, 6.4);
-  camera.lookAt(0, 0.78, 0);
+  camera.lookAt(0, 0, 0);
   const tex = glowTexture();
   const stars = starfield(700);
   const world = new Group();
@@ -668,7 +668,7 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
     onFrame: (time) => {
       stars.tick(time);
       world.rotation.y = 0.25 + Math.sin(time * 0.3) * 0.22;
-      world.position.y = Math.sin(time * 0.7) * 0.04;
+      world.position.y = -0.5 + Math.sin(time * 0.7) * 0.04; // sit below the HUD (orbit target is the origin)
       const cur = Math.floor(P0.asm);
       const pulse = 0.5 + 0.5 * Math.sin(time * 5);
       // Dots: bob a little; light up when part of the current triangle or cache event.

@@ -11,6 +11,7 @@ import {
   LineBasicMaterial,
   LineSegments,
   Matrix3,
+  MeshBasicMaterial,
   Matrix4,
   Points,
   PointsMaterial,
@@ -142,7 +143,7 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
 
   /* ---------- 3D scene ---------- */
   const { scene, camera } = makeScene();
-  camera.position.set(5.6, 2.7, 1.9);
+  camera.position.set(5.2, 2.5, 2.6);
   camera.lookAt(0, 0, 0);
   const tex = glowTexture();
   scene.add(starfield(500));
@@ -195,11 +196,20 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
   posLine.frustumCulled = false;
   ray.frustumCulled = false;
   scene.add(posLine, ray, nearDot);
-  const arrow = new ArrowHelper(nWorld, new Vector3(), 0.5, COLORS.magenta, 0.12, 0.07);
+  const arrow = new ArrowHelper(nWorld, new Vector3(), 0.75, COLORS.magenta, 0.16, 0.09);
   (arrow.line.material as LineBasicMaterial).color = hdr(COLORS.magenta, 2.2);
+  // Draw on top: from the observer's angle the vertex may sit on the far side of the model.
+  for (const m of [arrow.line.material, arrow.cone.material] as (LineBasicMaterial | MeshBasicMaterial)[]) m.depthTest = false;
+  arrow.line.renderOrder = arrow.cone.renderOrder = 21;
   scene.add(arrow);
   const nLabel = label('n', 'magenta');
   scene.add(nLabel);
+
+  // Center the interesting region (model → camera) on the orbit pivot.
+  const root = new Group();
+  for (const c of [...scene.children]) if (!(c instanceof Points)) root.add(c);
+  root.position.set(0, -0.35, -1.45);
+  scene.add(root);
 
   const P = { rot: 0, obj: 1, world: 0, cam: 0, clip: 0, nrm: 0 };
   const objP = new Vector3(...p);
@@ -217,7 +227,7 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
       const pulse = 0.5 + 0.5 * Math.sin(time * 4);
       vSprite.position.copy(wp);
       vSprite.scale.setScalar(0.16 + 0.05 * pulse);
-      vLabel.position.copy(wp).add(new Vector3(0, 0.16, 0));
+      vLabel.position.copy(wp).add(new Vector3(0, -0.17, 0));
       objAxes.set(P.obj);
       worldAxes.set(P.world);
       camAxes.set(P.cam);
@@ -235,7 +245,7 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
       arrow.setDirection(new Vector3(...n).applyMatrix3(new Matrix3().getNormalMatrix(M)).normalize());
       arrow.visible = P.nrm > 0.01;
       arrow.scale.setScalar(Math.max(0.01, P.nrm));
-      nLabel.position.copy(wp).addScaledVector(nWorld, 0.62);
+      nLabel.position.copy(wp).addScaledVector(nWorld, 0.9);
       nLabel.element.style.opacity = String(P.nrm);
       (wire.material as LineBasicMaterial).opacity = 0.08 + 0.1 * P.obj;
     },
@@ -393,7 +403,7 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
 
   // The concept world: the loaded model (as points), a floor grid and two crates.
   const MW = { t: new Vector3(0.35, 0, -0.5), ry: 0.9, s: 0.85 };
-  const CAM: Camera = { eye: [2.3, 1.5, 3.3], target: [0.1, -0.15, -0.5], up: [0, 1, 0], fovY: 48, near: 1, far: 5.5 };
+  const CAM: Camera = { eye: [1.75, 1.15, 2.3], target: [0.2, -0.2, -0.5], up: [0, 1, 0], fovY: 48, near: 0.8, far: 4.4 };
   const camDist = new Vector3(...CAM.eye).distanceTo(new Vector3(...CAM.target));
   const V = viewMatrix(CAM);
   const Pm = projectionMatrix(api, CAM, ASPECT);
@@ -412,7 +422,7 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
   const ptsPos = new Float32Array(objPts.length * 3);
   const ptsGeo = new BufferGeometry();
   ptsGeo.setAttribute('position', new BufferAttribute(ptsPos, 3));
-  const pts = new Points(ptsGeo, new PointsMaterial({ size: 0.05, map: tex, color: hdr(COLORS.cyan, 1.3), transparent: true, depthWrite: false, blending: AdditiveBlending }));
+  const pts = new Points(ptsGeo, new PointsMaterial({ size: 0.085, map: tex, color: hdr(COLORS.cyan, 1.1), transparent: true, depthWrite: false, blending: AdditiveBlending }));
   pts.frustumCulled = false;
   scene.add(pts);
 
@@ -448,7 +458,7 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
   const spikeN = Math.min(260, objPts.length);
   const spikeStep = Math.max(1, Math.floor(objPts.length / spikeN));
   const spikeIdx = Array.from({ length: spikeN }, (_, i) => i * spikeStep).filter((i) => i < objPts.length);
-  const spikes = lineSet(new Array(spikeIdx.length * 2).fill(0).map(() => new Vector3()), hdr(COLORS.magenta, 1.8), 0);
+  const spikes = lineSet(new Array(spikeIdx.length * 2).fill(0).map(() => new Vector3()), hdr(COLORS.magenta, 1.15), 0);
 
   // Axes gizmos built as line sets so they morph with everything else.
   const axisSrc = (len: number) => [new Vector3(), new Vector3(len, 0, 0), new Vector3(), new Vector3(0, len, 0), new Vector3(), new Vector3(0, 0, len)];
@@ -577,7 +587,7 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
       sp.push(base, base.clone().addScaledVector(objNrm[k].clone().applyMatrix3(nmat).normalize(), 0.18));
     });
     upd(spikes, sp);
-    spikes.mat.opacity = S.nrm * 0.9;
+    spikes.mat.opacity = S.nrm * 0.75;
     // Visibility per stage.
     const a2 = clamp01(S.s - 1);
     objAxes.mat.opacity = 1 - 0.75 * clamp01(S.s - 0.5);
@@ -586,7 +596,7 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
     frustum.mat.opacity = S.cam * (0.5 + 0.5 * a3);
     grid.mat.opacity = 0.15 + 0.45 * clamp01(S.s);
     crates.mat.opacity = clamp01(S.s * 1.5) * 0.9;
-    (pts.material as PointsMaterial).size = 0.045 + 0.01 * Math.sin(time * 3) * (1 - a3);
+    (pts.material as PointsMaterial).size = 0.08 + 0.012 * Math.sin(time * 3) * (1 - a3);
     // Tags.
     const tagAt = (lb: CSS2DObject, w: Vector3, o: number) => {
       display(w, lb.position);
