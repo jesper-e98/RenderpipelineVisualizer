@@ -1,11 +1,30 @@
 import gsap from 'gsap';
-import type { Matrix4 } from 'three';
-import { dur, h, num, reducedMotion, s } from '../core/dom';
+import {
+  BoxGeometry,
+  BufferGeometry,
+  EdgesGeometry,
+  Euler,
+  Float32BufferAttribute,
+  GridHelper,
+  Group,
+  LineBasicMaterial,
+  LineSegments,
+  Matrix4,
+  Mesh,
+  MeshBasicMaterial,
+  Quaternion,
+  Vector3,
+  Vector4,
+} from 'three';
+import { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
+import { dur, h, num, reducedMotion } from '../core/dom';
 import { SHOWCASE_ROT_X, SHOWCASE_ROT_Y } from '../core/derived';
 import { L, type Text } from '../core/i18n';
 import { API_LIST, type ApiId } from '../core/state';
-import { DEFAULT_CAMERA, matrices, projectionMatrix, runVertex } from '../pipeline/transform';
-import { card, matrixEl, vecEl } from '../views/widgets';
+import { DEFAULT_CAMERA, matrices, modelMatrix, projectionMatrix, rows, runVertex, type V3 } from '../pipeline/transform';
+import { createModelStage } from '../views/ModelStage';
+import { COLORS, label } from '../views/three-helpers';
+import { matrixEl, stat, vecEl } from '../views/widgets';
 import '../styles/slides/descriptors.css';
 import { standardSlide } from './standard';
 import type { ApiPanelSpec, SlideContext, Visual } from './types';
@@ -36,7 +55,395 @@ function zRange(api: ApiId): { near: number; far: number; p11: number; p22: numb
 }
 
 /* ------------------------------------------------------------------ */
-/* Real data: the matrices, their bytes and where they get bound        */
+/* The 3D scene: the real M, V and P applied to the model, step by step */
+/* ------------------------------------------------------------------ */
+const MHEX = [0x38e1ff, 0x9b7bff, 0xffb547, 0xff3fd2];
+const DIRECTOR: V3 = [5.0, 2.3, 2.6];
+const FRUSTUM_CUT = 4.6; // the far plane is at 10 – we draw the frustum up to here
+
+/** Elementwise mix of two 4×4 matrices (identity → P is how the "squash" is animated). */
+function mixMat(a: Matrix4, b: Matrix4, s: number, out = new Matrix4()): Matrix4 {
+  for (let i = 0; i < 16; i++) out.elements[i] = a.elements[i] * (1 - s) + b.elements[i] * s;
+  return out;
+}
+
+function lines(pts: number[]): LineSegments {
+  const g = new BufferGeometry();
+  g.setAttribute('position', new Float32BufferAttribute(pts, 3));
+  const l = new LineSegments(g, new LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 1 }));
+  l.frustumCulled = false;
+  return l;
+}
+
+/** Wire box between two corners. */
+function wireBox(a: V3, b: V3, color: number): LineSegments {
+  const [x0, y0, z0] = a;
+  const [x1, y1, z1] = b;
+  const c = [
+    [x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0],
+    [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1],
+  ];
+  const e = [0, 1, 1, 2, 2, 3, 3, 0, 4, 5, 5, 6, 6, 7, 7, 4, 0, 4, 1, 5, 2, 6, 3, 7];
+  const l = lines(e.flatMap((i) => c[i]));
+  (l.material as LineBasicMaterial).color.set(color);
+  return l;
+}
+
+interface MvpHooks {
+  /** Live matrices, called ~10× per second while they change. */
+  matrices?: (m: { model: Matrix4; view: Matrix4; proj: Matrix4; mvp: Matrix4 }, active: number) => void;
+}
+
+function mvpScene(host: HTMLElement, ctx: SlideContext, concept: boolean, hooks: MvpHooks) {
+  const { t } = ctx;
+  const api = ctx.state.api;
+  const motion = !reducedMotion();
+  const real = matrices(api, SHOWCASE_ROT_Y, ASPECT, undefined, SHOWCASE_ROT_X);
+  const ms = createModelStage(host, ctx, { shift: concept ? 0 : -0.15, autoRotate: 0, eye: DIRECTOR, bloom: 0.5, bloomThreshold: 0.85 });
+  ms.overlay.classList.add('ds-ms');
+  Object.values(ms.layers).forEach((o) => (o.frustumCulled = false));
+
+  // Display group G → projection PX → view VX → { model pivot, world grid, camera gizmo }.
+  const G = new Group();
+  const PX = new Group();
+  const VX = new Group();
+  PX.matrixAutoUpdate = false;
+  VX.matrixAutoUpdate = false;
+  ms.scene.add(G);
+  G.add(PX);
+  PX.add(VX);
+  VX.add(ms.pivot);
+  const grid = new GridHelper(4, 8, 0x3a4a8a, 0x222a55);
+  grid.position.y = -1.05;
+  (grid.material as LineBasicMaterial).transparent = true;
+  (grid.material as LineBasicMaterial).opacity = 0.55;
+  grid.frustumCulled = false;
+  VX.add(grid);
+
+  // Object axes (rotate with the model) – x red, y green, z blue.
+  const axes = lines([0, 0, 0, 1.3, 0, 0, 0, 0, 0, 0, 1.3, 0, 0, 0, 0, 0, 0, 1.3]);
+  axes.geometry.setAttribute('color', new Float32BufferAttribute([1, 0.35, 0.4, 1, 0.35, 0.4, 0.36, 0.94, 0.56, 0.36, 0.94, 0.56, 0.3, 0.6, 1, 0.3, 0.6, 1], 3));
+  (axes.material as LineBasicMaterial).vertexColors = true;
+  ms.pivot.add(axes);
+  const axisLabels = (['x', 'y', 'z'] as const).map((n, i) => {
+    const l = label(n, i === 0 ? 'magenta' : i === 1 ? '' : 'cyan');
+    l.position.set(i === 0 ? 1.42 : 0, i === 1 ? 1.42 : 0, i === 2 ? 1.42 : 0);
+    ms.pivot.add(l);
+    return l;
+  });
+
+  // The app's camera as a gizmo: a frustum from the near plane to a cut at 5.2 (far = 10).
+  const cam = DEFAULT_CAMERA;
+  const ty = Math.tan((cam.fovY * Math.PI) / 360);
+  const corners = (z: number) => {
+    const hy = z * ty;
+    const hx = hy * ASPECT;
+    return [[-hx, -hy, -z], [hx, -hy, -z], [hx, hy, -z], [-hx, hy, -z]];
+  };
+  const nc = corners(cam.near);
+  const fc = corners(FRUSTUM_CUT);
+  const fr: number[] = [];
+  for (let i = 0; i < 4; i++) fr.push(...nc[i], ...nc[(i + 1) % 4], ...fc[i], ...fc[(i + 1) % 4], ...nc[i], ...fc[i]);
+  const frustum = lines(fr);
+  (frustum.material as LineBasicMaterial).color.set(COLORS.amber);
+  const apex: number[] = [];
+  for (let i = 0; i < 4; i++) apex.push(0, 0, 0, ...nc[i]);
+  const camIcon = new Group();
+  const apexLines = lines(apex);
+  (apexLines.material as LineBasicMaterial).color.set(COLORS.amber);
+  const body = wireBox([-0.14, -0.1, 0.02], [0.14, 0.1, 0.3], COLORS.amber);
+  const camLabel = label(t(L('kameran', 'the camera')), 'amber');
+  camLabel.position.set(0, 0.28, 0.1);
+  camIcon.add(apexLines, body, camLabel);
+  const gizmo = new Group();
+  gizmo.matrixAutoUpdate = false;
+  gizmo.matrix.copy(real.view).invert();
+  gizmo.add(frustum, camIcon);
+  VX.add(gizmo);
+
+  // NDC box in display space (not projected): x, y ∈ [−1, 1], z ∈ [0 or −1, 1].
+  const zMin = api === 'opengl' ? -1 : 0;
+  const ndc = new Group();
+  ndc.add(wireBox([-1, -1, zMin], [1, 1, 1], COLORS.cyan));
+  const ndcLabels = [
+    [t(L(`near → z = ${zMin}`, `near → z = ${zMin}`)), [1.05, -1.12, zMin]],
+    [t(L('far → z = 1', 'far → z = 1')), [1.05, -1.12, 1]],
+    [api === 'vulkan' ? t(L('y nedåt (Vulkan)', 'y down (Vulkan)')) : t(L('y uppåt', 'y up')), [-1.05, 0.2, 1]],
+    ['NDC', [1, 1.15, zMin]],
+  ] as const;
+  ndcLabels.forEach(([txt, pos], i) => {
+    const l = label(txt, i === 2 && api === 'vulkan' ? 'magenta' : i === 3 ? 'big cyan' : 'cyan');
+    l.position.set(...(pos as V3));
+    ndc.add(l);
+  });
+  // Where the model really lands in NDC z (sampled vertices through the real MVP).
+  let zLo = Infinity;
+  let zHi = -Infinity;
+  {
+    const smp = ms.samplePositions(Math.min(2000, ctx.state.mesh.vertexCount));
+    const v4 = new Vector4();
+    for (let i = 0; i < smp.length; i += 3) {
+      v4.set(smp[i], smp[i + 1], smp[i + 2], 1).applyMatrix4(real.mvp);
+      const zz = v4.z / v4.w;
+      zLo = Math.min(zLo, zz);
+      zHi = Math.max(zHi, zz);
+    }
+  }
+  const zLabel = label(t(L(`modellen: z ${zLo.toFixed(2)} – ${zHi.toFixed(2)}`, `the model: z ${zLo.toFixed(2)} – ${zHi.toFixed(2)}`)), 'amber');
+  zLabel.position.set(0, -0.72, (zLo + zHi) / 2);
+  ndc.add(zLabel);
+  const ndcLabelObjs = ndc.children.filter((c) => c instanceof CSS2DObject);
+  G.add(ndc);
+  const ndcMats = ndc.children.filter((c): c is LineSegments => c instanceof LineSegments).map((c) => c.material as LineBasicMaterial);
+
+  // ---- The live transforms.
+  const state = { rot: 1, view: 1, proj: 0 };
+  const qView = new Quaternion().setFromRotationMatrix(real.view);
+  const eye = new Vector3(...cam.eye);
+  const I4 = new Matrix4();
+  const tmp = new Matrix4();
+  const cur = { model: new Matrix4(), view: new Matrix4(), proj: new Matrix4(), mvp: new Matrix4() };
+  let active = 0;
+  const apply = () => {
+    ms.pivot.rotation.set(SHOWCASE_ROT_X * state.rot, SHOWCASE_ROT_Y * state.rot, 0);
+    cur.model.copy(modelMatrix(SHOWCASE_ROT_Y * state.rot, SHOWCASE_ROT_X * state.rot));
+    // V(s) = R(s) · T(−s·eye): the world slides so the camera ends up at the origin, looking down −z.
+    const q = new Quaternion().slerp(qView, state.view);
+    cur.view.makeRotationFromQuaternion(q).multiply(tmp.makeTranslation(-eye.x * state.view, -eye.y * state.view, -eye.z * state.view));
+    VX.matrix.copy(cur.view);
+    mixMat(I4, real.proj, state.proj, cur.proj);
+    PX.matrix.copy(cur.proj);
+    cur.mvp.copy(cur.proj).multiply(cur.view).multiply(cur.model);
+    VX.matrixWorldNeedsUpdate = true;
+    PX.matrixWorldNeedsUpdate = true;
+  };
+  apply();
+
+  // Framing: the display group is scaled/moved so the interesting part stays centred.
+  const frameAt = (c: V3, k: number, s: number) => {
+    const p = { x: -c[0] * k, y: -c[1] * k, z: -c[2] * k };
+    if (s > 0) {
+      ms.tween(G.position, { ...p, duration: dur(s), ease: 'power2.inOut' });
+      ms.tween(G.scale, { x: k, y: k, z: k, duration: dur(s), ease: 'power2.inOut' });
+    } else {
+      G.position.set(p.x, p.y, p.z);
+      G.scale.setScalar(k);
+    }
+  };
+  const ndcCenter: V3 = [0, 0, (zMin + 1) / 2];
+
+  let frame = 0;
+  ms.onFrame(() => {
+    apply();
+    const on = ndc.visible && state.proj > 0.85;
+    ndcLabelObjs.forEach((l) => (l.visible = on));
+    if (frame++ % 5 === 0) hooks.matrices?.(cur, active);
+  });
+
+  // ---- Steps 2–3: the uniform buffer as 16 glowing vec4 blocks, and the slot it plugs into.
+  const ubo = new Group();
+  const cells: Mesh[] = [];
+  for (let i = 0; i < 16; i++) {
+    const m = new Mesh(new BoxGeometry(0.12, 0.12, 0.12), new MeshBasicMaterial({ color: MHEX[i >> 2], transparent: true, opacity: 0.35 }));
+    m.position.set(i * 0.15 + (i >> 2) * 0.05, 0, 0);
+    ubo.add(m, new LineSegments(new EdgesGeometry(m.geometry), new LineBasicMaterial({ color: MHEX[i >> 2] })));
+    ubo.children[ubo.children.length - 1].position.copy(m.position);
+    cells.push(m);
+  }
+  NAMES.forEach((n, i) => {
+    const l = label(concept ? ['M', 'V', 'P', 'MVP'][i] : n, i === 0 ? 'cyan' : i === 2 ? 'amber' : i === 3 ? 'magenta' : '');
+    l.position.set(i * 0.65 + 0.22, 0.17, 0);
+    ubo.add(l);
+  });
+  const uboLabel = label(`${UBO_SIZE} B`, 'big');
+  uboLabel.position.set(2.62, 0, 0);
+  ubo.add(uboLabel);
+  ms.scene.add(ubo);
+  const uboHome = new Vector3(-0.85, -0.98, 0.7);
+  const slotName = concept ? 'slot 0' : api === 'opengl' ? 'binding point 0' : api === 'vulkan' ? 'set 0 · binding 0' : 'root param 0 → b0';
+  const slotPos = new Vector3(-0.85, 1.02, 0.45);
+  const slot = ms.box(slotName, [slotPos.x, slotPos.y, slotPos.z], [0.75, 0.32, 0.3], COLORS.green);
+  const beam = ms.particles(260, COLORS.green, 0.035, 'world');
+  {
+    const from = new Float32Array(260 * 3);
+    const to = ms.samplePositions(260);
+    ms.pivot.updateMatrixWorld(true);
+    const v = new Vector3();
+    for (let i = 0; i < 260; i++) {
+      from.set([slotPos.x + (Math.random() - 0.5) * 0.4, slotPos.y - 0.1, slotPos.z], i * 3);
+      v.fromArray(to, i * 3).applyMatrix4(new Matrix4().makeRotationFromEuler(new Euler(SHOWCASE_ROT_X, SHOWCASE_ROT_Y, 0, 'YXZ'))).toArray(to, i * 3);
+    }
+    beam.setTargets(from, to);
+  }
+
+  let tl: gsap.core.Timeline | null = null;
+  const stopLoop = () => {
+    tl?.kill();
+    tl = null;
+  };
+  const fade = (mats: { opacity: number }[], o: number, s: number) =>
+    mats.forEach((m) => (s > 0 ? ms.tween(m, { opacity: o, duration: dur(s) }) : (m.opacity = o)));
+  const showGizmo = (o: number, s: number, icon = o) => {
+    fade([frustum.material as LineBasicMaterial], o, s);
+    fade([apexLines.material as LineBasicMaterial, body.material as LineBasicMaterial], icon, s);
+    camLabel.visible = icon > 0.5;
+  };
+
+  let step = 0;
+  return {
+    ms,
+    show(s: number, animate: boolean) {
+      const prev = step;
+      step = s;
+      stopLoop();
+      gsap.killTweensOf(state);
+      const inScene = s <= 1;
+      grid.visible = inScene;
+      axes.visible = s === 0;
+      axisLabels.forEach((l) => (l.visible = s === 0));
+      gizmo.visible = inScene;
+      ndc.visible = s === 1;
+      ubo.visible = s >= 2;
+      slot.visible = s === 3;
+      beam.points.visible = s === 3;
+      ms.setMode('shaded', 0, 0);
+      // Camera: a director's view on the transforms, the app's own camera for the buffer steps.
+      const camTo = new Vector3(...(inScene ? DIRECTOR : cam.eye));
+      if (animate && (prev <= 1) !== inScene) ms.tween(ms.camera.position, { x: camTo.x, y: camTo.y, z: camTo.z, duration: dur(1.2), ease: 'power2.inOut' });
+      else ms.camera.position.copy(camTo);
+
+      if (s === 0) {
+        // Model matrix: identity → the showcase rotation; view: the world slides in front of the camera.
+        ndcMats.forEach((m) => (m.opacity = 0));
+        const play = (tl: gsap.core.Timeline) => {
+          tl.call(() => {
+            Object.assign(state, { rot: 0, view: 0, proj: 0 });
+            active = 0;
+            showGizmo(0, 0);
+            frameAt([0, 0, 0], 1.35, 0);
+          }, [], 0);
+          tl.fromTo(state, { rot: 0 }, { rot: 1, duration: dur(1.8), ease: 'power2.inOut', immediateRender: false }, 0.5);
+          tl.call(() => {
+            active = 1;
+            showGizmo(1, 0.6);
+            frameAt([0, 0.35, 1.4], 0.62, 1.0);
+          }, [], 3.0);
+          tl.fromTo(state, { view: 0 }, { view: 1, duration: dur(2.2), ease: 'power2.inOut', immediateRender: false }, 4.3);
+          tl.call(() => frameAt([0, 0, -2.3], 0.7, 2.2), [], 4.3);
+          tl.call(() => (active = 3), [], 6.7);
+          return 9.5;
+        };
+        if (motion && animate !== false) {
+          tl = gsap.timeline({ repeat: -1 });
+          tl.set({}, {}, play(tl));
+        } else {
+          Object.assign(state, { rot: 1, view: 1, proj: 0 });
+          active = 3;
+          showGizmo(1, 0);
+          frameAt([0, 0, -2.3], 0.7, 0);
+          if (motion) {
+            tl = gsap.timeline({ repeat: -1, delay: 2 });
+            tl.set({}, {}, play(tl));
+          }
+        }
+      } else if (s === 1) {
+        // Projection: the frustum (and everything in it) squashes into the NDC box.
+        Object.assign(state, { rot: 1, view: 1 });
+        active = 2;
+        const squash = (tl: gsap.core.Timeline, at: number) => {
+          tl.call(() => {
+            showGizmo(1, 0.4, 0);
+            frameAt(ndcCenter, 1.0, 2.0);
+            fade(ndcMats, 0.9, 1.6);
+          }, [], at);
+          tl.fromTo(state, { proj: 0 }, { proj: 1, duration: dur(2.2), ease: 'power2.inOut', immediateRender: false }, at + 0.2);
+          tl.call(() => (active = 3), [], at + 2.4);
+        };
+        if (motion) {
+          tl = gsap.timeline({ repeat: -1 });
+          tl.call(() => {
+            if (animate || tl!.iteration() > 0) {
+              state.proj = 0;
+              active = 2;
+              frameAt([0, 0, -2.3], 0.7, 0);
+              fade(ndcMats, 0, 0);
+              showGizmo(1, 0, 0);
+            }
+          }, [], 0);
+          squash(tl, animate ? 0.6 : 0.01);
+          tl.fromTo(state, { proj: 1 }, { proj: 0, duration: dur(1.4), ease: 'power2.inOut', immediateRender: false }, 6.5);
+          tl.call(() => {
+            frameAt([0, 0, -2.3], 0.7, 1.4);
+            fade(ndcMats, 0, 1.0);
+            active = 2;
+          }, [], 6.5);
+          tl.set({}, {}, 9.0);
+          if (!animate) {
+            state.proj = 1;
+            frameAt(ndcCenter, 1.0, 0);
+            fade(ndcMats, 0.9, 0);
+            showGizmo(1, 0, 0);
+            tl.seek(3.0, false);
+          }
+        } else {
+          state.proj = 1;
+          active = 3;
+          frameAt(ndcCenter, 1.0, 0);
+          fade(ndcMats, 0.9, 0);
+          showGizmo(1, 0, 0);
+        }
+      } else {
+        // Steps 2–3: back to the app's real view; the matrices go into a buffer.
+        Object.assign(state, { rot: 1, view: 0, proj: 0 });
+        active = 3;
+        frameAt([0, 0, 0], 1, 0);
+        showGizmo(0, 0);
+        const uboAt = s === 2 ? uboHome : slotPos.clone().add(new Vector3(-0.26, -0.02, 0.12));
+        const k = s === 2 ? 0.72 : 0.2;
+        if (animate && prev === 2 && s === 3) {
+          ms.tween(ubo.position, { x: uboAt.x, y: uboAt.y, z: uboAt.z, duration: dur(1.0), ease: 'power3.inOut' });
+          ms.tween(ubo.scale, { x: k, y: k, z: k, duration: dur(1.0), ease: 'power3.inOut' });
+        } else {
+          ubo.position.copy(uboAt);
+          ubo.scale.setScalar(k);
+        }
+        ubo.children.forEach((c) => {
+          if (c instanceof CSS2DObject) c.visible = s === 2;
+        });
+        cells.forEach((c) => ((c.material as MeshBasicMaterial).opacity = s === 2 ? 0.35 : 0.8));
+        if (motion) {
+          tl = gsap.timeline({ repeat: -1 });
+          if (s === 2) {
+            // memcpy: the 16 vec4 rows are written in order, every frame.
+            cells.forEach((c, i) => {
+              tl!.to(c.material, { opacity: 1, duration: dur(0.08) }, 0.3 + i * 0.09);
+              tl!.to(c.material, { opacity: 0.35, duration: dur(0.6) }, 0.4 + i * 0.09);
+            });
+            tl.set({}, {}, 3.2);
+          } else {
+            tl.call(() => beam.progress(0, 0), [], animate ? 1.0 : 0);
+            tl.call(() => beam.progress(1, 1.6), [], (animate ? 1.0 : 0) + 0.05);
+            tl.call(() => {
+              ms.sweep('shaded', 'shaded', 0.9);
+              ms.material.uniforms.uSweepColor.value.set(COLORS.green);
+            }, [], (animate ? 1.0 : 0) + 1.5);
+            tl.set({}, {}, (animate ? 1.0 : 0) + 2.8);
+          }
+        } else beam.progress(1, 0);
+      }
+      apply();
+      hooks.matrices?.(cur, active);
+    },
+    destroy() {
+      stopLoop();
+      gsap.killTweensOf(state);
+      ms.destroy();
+    },
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* Real data: the matrices live, their bytes and where they get bound   */
 /* ------------------------------------------------------------------ */
 function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
   const { t } = ctx;
@@ -45,27 +452,38 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
   const list = [m.model, m.view, m.proj, m.mvp];
   const cam = DEFAULT_CAMERA;
 
-  // ---- Steps 0–1: the four matrices.
-  const subs = [
-    `rotY ${SHOWCASE_ROT_Y} · rotX ${SHOWCASE_ROT_X}`,
-    `eye (${cam.eye.join(', ')})`,
-    `fov ${cam.fovY}° · ${ASPECT.toFixed(3)} · ${cam.near}–${cam.far}`,
-    'proj × view × model',
-  ];
+  // ---- Panel 1: the four matrices, live.
+  const subs = [`rotY ${SHOWCASE_ROT_Y} · rotX ${SHOWCASE_ROT_X}`, `eye (${cam.eye.join(', ')})`, `fov ${cam.fovY}° · ${ASPECT.toFixed(3)} · ${cam.near}–${cam.far}`, 'proj × view × model'];
   const mEls = list.map((mm) => matrixEl(mm, 3));
+  const mCells = mEls.map((el) => Array.from(el.children) as HTMLElement[]);
   const mCards = list.map((_, i) =>
-    h(`div.card.ds-mcard.${MCLS[i]}`, {}, [h('h4', {}, [h('b', { text: ['M', 'V', 'P', 'MVP'][i] }), ` ${NAMES[i]}`]), mEls[i], h('div.ds-msub', { text: subs[i] })]),
+    h(`div.ds-mcard.${MCLS[i]}`, {}, [h('div.ds-mh', {}, [h('b', { text: ['M', 'V', 'P', 'MVP'][i] }), ` ${NAMES[i]}`, h('span.ds-msub', { text: subs[i] })]), mEls[i]]),
   );
-  const pCells = Array.from(mEls[2].children) as HTMLElement[];
-  const mvpCells = Array.from(mEls[3].children) as HTMLElement[];
-
-  // Vertex check: the showcase triangle's first vertex through the MVP.
   const tri = ctx.derived.showcaseTriangle(api);
   const vi = ctx.derived.triangleVertices(tri)[0];
   const vs = runVertex(api, ctx.derived.position(vi), m, 1920, 1080);
-  const check = card(t(L(`Kontroll: vertex ${vi} genom MVP`, `Check: vertex ${vi} through the MVP`)), [
+  const z = zRange(api);
+  const matStats = h('div.stat-row', {}, [
+    stat(num(vs.ndc[2], 3), t(L(`NDC z, vertex ${vi}`, `NDC z, vertex ${vi}`)), 'glow-cyan'),
+    stat(`[${num(z.near, 0)}, ${num(z.far, 0)}]`, t(L('z-intervall', 'z range')), 'glow-amber'),
+  ]);
+  const matPanel = h('div', {}, [h('div.ds-mats', {}, mCards), matStats]);
+
+  // ---- Panel 1b: the projection per API, and one vertex through the MVP.
+  const cmpRows = API_LIST.map((a) => {
+    const zz = zRange(a.id);
+    return h(`tr${a.id === api ? '.me' : ''}`, {}, [
+      h('td', { text: a.label }),
+      h(`td.mono${a.id === 'vulkan' ? '.neg' : ''}`, { text: num(zz.p11, 3) }),
+      h('td.mono', { text: num(zz.p22, 3) }),
+      h('td.mono', { text: `${num(zz.near, 0)} → ${num(zz.far, 0)}` }),
+      h('td', { text: a.id === 'vulkan' ? 'y ↓' : 'y ↑' }),
+    ]);
+  });
+  const projPanel = h('div', {}, [
+    h('table.ds-cmp', {}, [h('thead', {}, [h('tr', {}, ['API', 'P[1][1]', 'P[2][2]', 'near → far', 'y'].map((x) => h('th', { text: x })))]), h('tbody', {}, cmpRows)]),
     h('div.ds-check', {}, [
-      h('span.k', { text: 'object' }),
+      h('span.k', { text: `v${vi} object` }),
       vecEl(vs.object, 3, 'c-pos'),
       h('span.k', { text: 'MVP · p = clip' }),
       vecEl(vs.clip, 3),
@@ -74,208 +492,118 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
     ]),
   ]);
 
-  // API comparison of the projection.
-  const cmpRows = API_LIST.map((a) => {
-    const z = zRange(a.id);
-    return h(`tr${a.id === api ? '.me' : ''}`, {}, [
-      h('td', { text: `${a.label}` }),
-      h(`td.mono${a.id === 'vulkan' ? '.neg' : ''}`, { text: num(z.p11, 3) }),
-      h('td.mono', { text: num(z.p22, 3) }),
-      h('td.mono', { text: num(z.p23, 3) }),
-      h('td.mono', { text: num(z.near, 2) }),
-      h('td.mono', { text: num(z.far, 2) }),
-      h('td', { text: a.id === 'opengl' ? 'z ∈ [−1, 1]' : a.id === 'vulkan' ? t(L('z ∈ [0, 1], y nedåt', 'z ∈ [0, 1], y down')) : 'z ∈ [0, 1]' }),
-    ]);
-  });
-  const cmp = card(t(L('Projektionen skiljer sig per API', 'The projection differs per API')), [
-    h('table.ds-cmp', {}, [
-      h('thead', {}, [h('tr', {}, ['API', 'P[1][1]', 'P[2][2]', 'P[2][3]', 'near → z', 'far → z', 'NDC'].map((x) => h('th', { text: x })))]),
-      h('tbody', {}, cmpRows),
-    ]),
-  ]);
-  const matPanel = h('div.ds-panel.ds-mats', {}, [h('div.ds-mrow', {}, mCards), h('div.ds-under', {}, [check, cmp])]);
-
-  // ---- Step 2: the real bytes of the uniform / constant buffer.
+  // ---- Panel 2: the real bytes, 16 B (one vec4 column) per row.
   const bytes = uboBytes(list);
   const rowsEl: HTMLElement[] = [];
-  for (let r = 0; r < 8; r++) {
-    const mi = r >> 1;
+  for (let r = 0; r < 16; r++) {
+    const mi = r >> 2;
     const cells: HTMLElement[] = [];
-    for (let b = 0; b < 32; b++) {
-      const c = h(`span.mem-cell.ds-b.${MCLS[mi]}`, { text: bytes[r * 32 + b].toString(16).padStart(2, '0') });
+    for (let b = 0; b < 16; b++) {
+      const c = h(`span.mem-cell.ds-b.${MCLS[mi]}`, { text: bytes[r * 16 + b].toString(16).padStart(2, '0') });
       if (b % 4 === 3) c.classList.add('w');
-      if (b === 15) c.classList.add('col');
       cells.push(c);
     }
-    rowsEl.push(
-      h('div.mem-row', {}, [
-        h('span.mem-addr', { text: '+0x' + (r * 32).toString(16).padStart(3, '0') }),
-        ...cells,
-      ]),
-    );
+    rowsEl.push(h('div.mem-row', {}, [h('span.mem-addr', { text: '+0x' + (r * 16).toString(16).padStart(2, '0') }), ...cells]));
   }
   const first = Array.from(bytes.subarray(0, 4), (b) => b.toString(16).padStart(2, '0')).join(' ');
-  const segs = h('div.ds-segs', {}, NAMES.map((n, i) => h(`div.ds-seg.${MCLS[i]}`, {}, [h('b', { text: n }), h('span', { text: `${i * 64}–${i * 64 + 63}` })])));
   const notes: Record<ApiId, Text> = {
-    opengl: L(
-      '<b>std140</b>: en mat4 = 4 kolumner × vec4 = 64 B, 16 B-justerad. Kolumnordning, så <code>glUniformMatrix4fv(…, GL_FALSE, …)</code> / rå kopiering fungerar direkt.',
-      '<b>std140</b>: a mat4 = 4 columns × vec4 = 64 B, 16-byte aligned. Column-major, so <code>glUniformMatrix4fv(…, GL_FALSE, …)</code> / a raw copy works as is.',
-    ),
-    vulkan: L(
-      'Uniform-block är <b>std140</b>: mat4 = 64 B i kolumnordning. Per-frame-offset (f × 256) måste vara en multipel av <code>minUniformBufferOffsetAlignment</code> (≤ 256).',
-      'Uniform blocks are <b>std140</b>: mat4 = 64 B, column-major. Per-frame offsets (f × 256) must be a multiple of <code>minUniformBufferOffsetAlignment</code> (≤ 256).',
-    ),
-    d3d12: L(
-      'En CBV måste ligga på och vara en multipel av <b>256 B</b> – här exakt 256 B. HLSL packar <code>float4x4</code> som <code>column_major</code> som standard; med <code>row_major</code> måste du transponera.',
-      'A CBV must start at and be a multiple of <b>256 B</b> – here exactly 256 B. HLSL packs <code>float4x4</code> as <code>column_major</code> by default; with <code>row_major</code> you must transpose.',
-    ),
+    opengl: L('<b>std140</b>: mat4 = 4 kolumner × vec4 = 64 B, kolumnordning – <code>glNamedBufferSubData</code> kopierar som det är.', '<b>std140</b>: mat4 = 4 columns × vec4 = 64 B, column-major – <code>glNamedBufferSubData</code> copies it as is.'),
+    vulkan: L('<b>std140</b>, 64 B per mat4. Per-frame-offset f × 256 måste vara en multipel av <code>minUniformBufferOffsetAlignment</code>.', '<b>std140</b>, 64 B per mat4. The per-frame offset f × 256 must be a multiple of <code>minUniformBufferOffsetAlignment</code>.'),
+    d3d12: L('En CBV måste vara <b>256 B</b>-justerad – här exakt 256 B. HLSL läser <code>float4x4</code> som <code>column_major</code>.', 'A CBV must be <b>256-byte</b> aligned – here exactly 256 B. HLSL reads <code>float4x4</code> as <code>column_major</code>.'),
   };
-  const bytePanel = h('div.ds-panel.ds-bytes', {}, [
-    card(`${api === 'd3d12' ? 'cbuffer Transforms : register(b0)' : 'uniform Transforms'} · ${UBO_SIZE} B · ${t(L('verkliga bytes', 'real bytes'))}`, [
-      segs,
-      h('div.v-scroll.ds-dump', {}, [h('div.mem', {}, rowsEl)]),
-    ]),
-    h('div.ds-bside', {}, [
-      card(t(L('Avkodning', 'Decoding')), [
-        h('div.ds-dec', {}, [h('code', { text: `+0x000: ${first}` }), h('div', { text: '↓ float32, little-endian' }), h('code.glow-cyan', { text: `model[0][0] = ${m.model.elements[0].toFixed(6)}` })]),
-      ]),
-      card(t(L('Regler', 'Rules')), [h('p.ds-note', { html: t(notes[api]) })]),
-      card(t(L(`${FRAMES} frames i flykten`, `${FRAMES} frames in flight`)), [h('p.ds-note', { text: t(L(`En kopia per frame: ${FRAMES} × ${UBO_SIZE} B = ${FRAMES * UBO_SIZE} B, så CPU:n inte skriver över det GPU:n läser.`, `One copy per frame: ${FRAMES} × ${UBO_SIZE} B = ${FRAMES * UBO_SIZE} B, so the CPU never overwrites what the GPU is reading.`)) })]),
-    ]),
+  const bytePanel = h('div', {}, [
+    h('div.stat-row', {}, [stat(`${UBO_SIZE} B`, api === 'd3d12' ? 'cbuffer' : 'uniform block', 'glow-cyan'), stat(`${FRAMES} × ${UBO_SIZE} B`, t(L('en kopia per frame', 'one copy per frame')), 'glow-magenta')]),
+    h('div.ds-segs', {}, NAMES.map((n, i) => h(`span.ds-seg.${MCLS[i]}`, {}, [h('b', { text: n }), ` ${i * 64}–${i * 64 + 63}`]))),
+    h('div.v-scroll.ds-dump', {}, [h('div.mem', {}, rowsEl)]),
+    h('div.ds-dec', {}, [h('code', { text: `+0x00: ${first}` }), h('span', { text: ' → float32 LE → ' }), h('code.glow-cyan', { text: `model[0][0] = ${m.model.elements[0].toFixed(6)}` })]),
+    h('p.ds-note', { html: t(notes[api]) }),
   ]);
 
-  // ---- Step 3: the binding chain.
-  const chainFor: Record<ApiId, { main: [string, string][]; alt: [string, string][]; altTitle: Text }> = {
-    opengl: {
-      main: [
-        ['GL buffer (UBO)', `glNamedBufferSubData · ${UBO_SIZE} B`],
-        ['glBindBufferBase', 'GL_UNIFORM_BUFFER, 0, ubo'],
-        ['binding point 0', t(L('global tabell i kontexten', 'global table in the context'))],
-        ['layout(binding = 0)', 'uniform Transforms { … }'],
-      ],
-      alt: [
-        ['uniform mat4 mvp;', t(L('utan block', 'without a block'))],
-        ['glGetUniformLocation', 'prog, "mvp"'],
-        ['glUniformMatrix4fv', 'loc, 1, GL_FALSE, mvp'],
-      ],
-      altTitle: L('Gamla sättet', 'The old way'),
-    },
-    vulkan: {
-      main: [
-        ['VkBuffer', `UNIFORM_BUFFER · ${FRAMES} × ${UBO_SIZE} B`],
-        ['VkDescriptorSet', `binding 0 → { ubo, f × 256, ${UBO_SIZE} }`],
-        ['vkCmdBindDescriptorSets', 'layout, firstSet = 0'],
-        ['layout(set = 0, binding = 0)', 'uniform Transforms { … }'],
-      ],
-      alt: [
-        ['vkCmdPushConstants', t(L('128 B: mvp + model', '128 B: mvp + model'))],
-        ['VkPushConstantRange', 'VERTEX_BIT, 0, 128'],
-        ['layout(push_constant)', 'uniform PC { mat4 mvp; mat4 model; }'],
-      ],
-      altTitle: L('Push constants (≥ 128 B garanterat)', 'Push constants (≥ 128 B guaranteed)'),
-    },
-    d3d12: {
-      main: [
-        ['ID3D12Resource', `UPLOAD heap · ${FRAMES} × ${UBO_SIZE} B`],
-        [t(L('rotparameter 0', 'root parameter 0')), 'root CBV (2 DWORDs)'],
-        ['SetGraphicsRootConstantBufferView', '0, gpuVA + f × 256'],
-        ['register(b0)', 'cbuffer Transforms { … }'],
-      ],
-      alt: [
-        ['CreateConstantBufferView', 'CBV → shader-visible heap'],
-        [t(L('deskriptortabell', 'descriptor table')), 'SetGraphicsRootDescriptorTable'],
-        ['register(b0)', t(L('samma shader', 'same shader'))],
-      ],
-      altTitle: L('Alternativ: deskriptortabell (eller root constants)', 'Alternative: descriptor table (or root constants)'),
-    },
+  // ---- Panel 3: buffer → slot → shader.
+  const chainFor: Record<ApiId, [string, string][]> = {
+    opengl: [
+      ['GL buffer (UBO)', `glNamedBufferSubData · ${UBO_SIZE} B`],
+      ['glBindBufferBase', 'GL_UNIFORM_BUFFER, 0, ubo'],
+      ['binding point 0', t(L('global tabell i kontexten', 'global table in the context'))],
+      ['layout(binding = 0)', 'uniform Transforms { … }'],
+    ],
+    vulkan: [
+      ['VkBuffer', `UNIFORM_BUFFER · ${FRAMES} × ${UBO_SIZE} B`],
+      ['VkDescriptorSet', `binding 0 → { ubo, f × 256, ${UBO_SIZE} }`],
+      ['vkCmdBindDescriptorSets', 'layout, firstSet = 0'],
+      ['layout(set = 0, binding = 0)', 'uniform Transforms { … }'],
+    ],
+    d3d12: [
+      ['ID3D12Resource', `UPLOAD heap · ${FRAMES} × ${UBO_SIZE} B`],
+      [t(L('rotparameter 0', 'root parameter 0')), 'root CBV (2 DWORDs)'],
+      ['SetGraphicsRootConstantBufferView', '0, gpuVA + f × 256'],
+      ['register(b0)', 'cbuffer Transforms { … }'],
+    ],
   };
-  const ch = chainFor[api];
-  const bindNote: Record<ApiId, Text> = {
-    opengl: L(
-      'Binding points är global kontext-state – alla program som läser <code>binding = 0</code> ser samma buffert tills någon binder om.',
-      'Binding points are global context state – every program that reads <code>binding = 0</code> sees the same buffer until someone rebinds it.',
-    ),
-    vulkan: L(
-      'Vanlig uppdelning: <code>set 0</code> per frame (kamera), <code>set 1</code> per material, <code>set 2</code> per objekt – bind bara det som ändras.',
-      'A common split: <code>set 0</code> per frame (camera), <code>set 1</code> per material, <code>set 2</code> per object – bind only what changes.',
-    ),
-    d3d12: L(
-      'Rotsignaturen är shaderns "funktionssignatur": högst 64 DWORDs – root CBV = 2, deskriptortabell = 1, root constant = 1 per 32 bitar.',
-      'The root signature is the shader’s "function signature": at most 64 DWORDs – root CBV = 2, descriptor table = 1, root constant = 1 per 32 bits.',
-    ),
+  const alt: Record<ApiId, Text> = {
+    opengl: L('Gamla sättet: <code>glGetUniformLocation</code> + <code>glUniformMatrix4fv(loc, 1, GL_FALSE, mvp)</code>.', 'The old way: <code>glGetUniformLocation</code> + <code>glUniformMatrix4fv(loc, 1, GL_FALSE, mvp)</code>.'),
+    vulkan: L('Alternativ: <code>vkCmdPushConstants</code> – 128 B (mvp + model) direkt i kommandobufferten.', 'Alternative: <code>vkCmdPushConstants</code> – 128 B (mvp + model) straight into the command buffer.'),
+    d3d12: L('Alternativ: en deskriptortabell i en CBV-heap, eller root constants (1 DWORD per 32 bitar, max 64).', 'Alternative: a descriptor table into a CBV heap, or root constants (1 DWORD per 32 bits, max 64).'),
   };
-  const mkRow = (items: [string, string][], cls: string) =>
-    h(`div.ds-chain.${cls}`, {}, items.flatMap(([a, b], i) => [i ? h('div.ds-wire', {}, [h('span')]) : null, h('div.ds-node', {}, [h('div.t', { text: a.replace(/([a-z])([A-Z])/g, '$1\u200b$2') }), h('div.s', { text: b })])]).filter(Boolean) as HTMLElement[]);
-  const mainRow = mkRow(ch.main, 'main');
-  const slotIdx = api === 'opengl' ? 2 : 1;
-  mainRow.querySelectorAll('.ds-node')[slotIdx]?.classList.add('slot');
-  const bindPanel = h('div.ds-panel.ds-bind', {}, [
-    h('div.ds-bind-h', { text: t(L('Från buffert till shader – slot 0', 'From buffer to shader – slot 0')) }),
-    mainRow,
-    h('div.ds-bind-h.alt', { text: t(ch.altTitle) }),
-    mkRow(ch.alt, 'alt'),
-    h('p.ds-note.ds-bind-note', { html: t(bindNote[api]) }),
+  const chainEls = chainFor[api].map(([a, b], i) => h(`div.ds-node${i === (api === 'opengl' ? 2 : 1) ? '.slot' : ''}`, {}, [h('div.t', { text: a.replace(/([a-z])([A-Z])/g, '$1​$2') }), h('div.s', { text: b })]));
+  const bindPanel = h('div', {}, [
+    h('div.stat-row', {}, [stat(api === 'd3d12' ? 'b0' : 'binding 0', t(L('slot i shadern', 'slot in the shader')), 'glow-green'), stat(api === 'vulkan' ? 'set 0' : api === 'd3d12' ? '2 DWORD' : 'global', api === 'vulkan' ? 'descriptor set' : api === 'd3d12' ? 'root CBV' : t(L('bindningstabell', 'binding table')), 'glow-amber')]),
+    h('div.ds-chain', {}, chainEls),
+    h('p.ds-note', { html: t(alt[api]) }),
   ]);
 
-  const panels = [matPanel, matPanel, bytePanel, bindPanel];
-  const root = h('div.ds-data', { dataset: { api } }, [matPanel, bytePanel, bindPanel]);
-  host.append(root);
+  const titles = [t(L('Matriserna – live', 'The matrices – live')), t(L('Projektionen per API', 'The projection per API')), `${api === 'd3d12' ? 'cbuffer Transforms : register(b0)' : 'uniform Transforms'} · ${t(L('verkliga bytes', 'real bytes'))}`, t(L('Från buffert till shader', 'From buffer to shader'))];
+  const sc = mvpScene(host, ctx, false, {
+    matrices: (cur, active) => {
+      [cur.model, cur.view, cur.proj, cur.mvp].forEach((mm, i) => {
+        const r = rows(mm).flat();
+        mCells[i].forEach((c, k) => (c.textContent = num(r[k], 3)));
+        mCards[i].classList.toggle('on', i === active);
+      });
+    },
+  });
+  const ms = sc.ms;
+  const pMat = ms.panel(titles[0], [matPanel], { className: 'ds-p' });
+  const pProj = ms.panel(titles[1], [projPanel], { className: 'ds-p' });
+  const pBytes = ms.panel(titles[2], [bytePanel], { className: 'ds-p' });
+  const pBind = ms.panel(titles[3], [bindPanel], { className: 'ds-p' });
+  const pCells = mCells[2];
 
   return {
     show(step, animate) {
-      root.dataset.step = String(step);
-      [matPanel, bytePanel, bindPanel].forEach((p) => p.classList.toggle('on', p === panels[step]));
-      check.style.display = step === 0 ? '' : 'none';
-      cmp.style.display = step === 1 ? '' : 'none';
-      const hl = step === 1;
-      [5, 10, 11].forEach((i) => pCells[i].classList.toggle('hl', hl));
-      pCells[5].classList.toggle('flip', hl && api === 'vulkan');
-      mvpCells.forEach((c) => c.classList.toggle('glow', step === 0));
-      if (!animate) return;
-      if (step === 0) {
-        gsap.fromTo(mCards, { opacity: 0, y: 16 }, { opacity: 1, y: 0, stagger: 0.12, duration: dur(0.45) });
-        gsap.fromTo(mvpCells, { opacity: 0 }, { opacity: 1, stagger: 0.03, delay: 0.5, duration: dur(0.2) });
-      } else if (step === 1) {
-        gsap.fromTo(cmp, { opacity: 0, y: 10 }, { opacity: 1, y: 0, duration: dur(0.4) });
-        gsap.fromTo([pCells[5], pCells[10], pCells[11]], { scale: 1.6 }, { scale: 1, duration: dur(0.5), ease: 'back.out(2)' });
-      } else if (step === 2) {
-        gsap.fromTo(bytePanel, { opacity: 0 }, { opacity: 1, duration: dur(0.3) });
-        gsap.fromTo(rowsEl, { opacity: 0, x: -20 }, { opacity: 1, x: 0, stagger: 0.05, duration: dur(0.3) });
-      } else {
-        const nodes = bindPanel.querySelectorAll('.ds-node, .ds-wire');
-        gsap.fromTo(nodes, { opacity: 0, y: 8 }, { opacity: 1, y: 0, stagger: 0.08, duration: dur(0.35) });
-      }
+      pMat.style.display = step <= 1 ? '' : 'none';
+      pProj.style.display = step === 1 ? '' : 'none';
+      pBytes.style.display = step === 2 ? '' : 'none';
+      pBind.style.display = step === 3 ? '' : 'none';
+      mCards.forEach((c, i) => (c.style.display = step === 1 && i < 2 ? 'none' : ''));
+      [5, 10, 11].forEach((i) => pCells[i].classList.toggle('hl', step === 1));
+      pCells[5].classList.toggle('flip', step === 1 && api === 'vulkan');
+      const shown = [pMat, pProj, pBytes, pBind].filter((p) => p.style.display !== 'none');
+      if (animate) gsap.fromTo(shown, { opacity: 0, x: 14 }, { opacity: 1, x: 0, duration: dur(0.4) });
+      if (animate && step === 2) gsap.fromTo(rowsEl, { opacity: 0, x: -10 }, { opacity: 1, x: 0, stagger: 0.04, duration: dur(0.25) });
+      if (animate && step === 3) gsap.fromTo(chainEls, { opacity: 0, y: 8 }, { opacity: 1, y: 0, stagger: 0.12, duration: dur(0.35) });
+      sc.show(step, animate);
     },
     destroy() {
-      gsap.killTweensOf([...mCards, ...mvpCells, ...pCells, cmp, bytePanel, ...rowsEl]);
-      gsap.killTweensOf(bindPanel.querySelectorAll('*'));
+      gsap.killTweensOf([pMat, pProj, pBytes, pBind, ...rowsEl, ...chainEls]);
+      sc.destroy();
     },
   };
 }
 
 /* ------------------------------------------------------------------ */
-/* Concept: matrix blocks travel into numbered slots wired to a shader  */
+/* Concept: the same transforms, explained                              */
 /* ------------------------------------------------------------------ */
 function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
   const { t } = ctx;
   const api = ctx.state.api;
-  const motion = !reducedMotion();
-  const stage = h('div.v-fill.dsc-stage');
-  const caption = h('div.pack-caption.dsc-caption');
-  host.append(stage, caption);
-
-  const svg = s('svg', { class: 'dsc-wires' });
-  stage.append(svg);
-  const tiles = ['M', 'V', 'P', 'MVP'].map((n, i) => h(`div.dsc-tile.${MCLS[i]}`, {}, [h('b', { text: n }), h('small', { text: '64 B' })]));
-  const ops = ['×', '×', '='].map((o) => h('div.dsc-op', { text: o }));
-  const strip = h('div.dsc-strip', {}, [h('span.dsc-strip-l', { text: `${UBO_SIZE} B` })]);
-  const align = h('div.dsc-align', { text: api === 'd3d12' ? t(L('256 B-gräns ✓', '256 B boundary ✓')) : 'std140 ✓' });
-  const slotLabel = (i: number) => (api === 'd3d12' ? `root param ${i}` : `binding ${i}`);
-  const rack = h('div.dsc-rack', { text: api === 'opengl' ? 'binding points' : api === 'vulkan' ? 'descriptor set 0' : 'root signature' });
-  const slots = [0, 1, 2, 3].map((i) => h('div.dsc-slot', {}, [h('span.dsc-num', { text: String(i) }), h('span.dsc-sl', { text: slotLabel(i) })]));
-  const decl = api === 'd3d12' ? 'cbuffer Transforms : register(b0)' : api === 'vulkan' ? 'layout(set = 0, binding = 0) uniform Transforms' : 'layout(std140, binding = 0) uniform Transforms';
-  const shaderLines = [decl, '{ mat4 model, view, proj, mvp; };', api === 'd3d12' ? 'o.pos = mul(mvp, float4(p, 1));' : 'gl_Position = mvp * vec4(p, 1.0);'];
-  const shader = h('div.dsc-shader', {}, [h('div.dsc-sh-h', { text: t(L('vertexshader', 'vertex shader')) }), ...shaderLines.map((l, i) => h(`code.dsc-line${i === 0 ? '.decl' : ''}`, { text: l }))]);
+  const captions = [
+    L('<b>Model</b> vrider modellen på plats (axlarna följer med). <b>View</b> flyttar hela världen så att kameran hamnar i origo och tittar längs −z.', '<b>Model</b> turns the model into place (the axes follow). <b>View</b> moves the whole world so the camera ends up at the origin looking down −z.'),
+    L('<b>Projection</b> klämmer ihop synfältet till en låda: OpenGL z ∈ [−1, 1], D3D12 och Vulkan z ∈ [0, 1] – och i Vulkan vänds y.', '<b>Projection</b> squashes the field of view into a box: OpenGL z ∈ [−1, 1], D3D12 and Vulkan z ∈ [0, 1] – and in Vulkan y is flipped.'),
+    L('CPU:n packar matriserna byte för byte i en buffert med en fast layout – här skrivs de 16 vec4-raderna varje frame.', 'The CPU packs the matrices byte by byte into a buffer with a fixed layout – here the 16 vec4 rows are written every frame.'),
+    L('Bufferten kopplas till en numrerad slot. Shadern läser från samma nummer – det är hela kontraktet.', 'The buffer is plugged into a numbered slot. The shader reads from the same number – that is the whole contract.'),
+  ];
+  const caption = h('p.ds-caption');
   const variants = h('div.dsc-variants', {}, API_LIST.map((a) => {
     const z = zRange(a.id);
     return h(`div.dsc-var${a.id === api ? '.me' : ''}`, {}, [
@@ -285,118 +613,20 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
       h('span.y', { text: a.id === 'vulkan' ? 'y ↓' : 'y ↑' }),
     ]);
   }));
-  stage.append(...tiles, ...ops, strip, align, rack, ...slots, shader, variants);
-
-  let step = 0;
-  let wirePaths: SVGPathElement[] = [];
-  let feed: SVGPathElement | null = null;
-
-  const captions = [
-    L('CPU:n räknar ut modell-, vy- och projektionsmatrisen varje frame och multiplicerar ihop dem: MVP = P × V × M.', 'The CPU computes the model, view and projection matrices every frame and multiplies them: MVP = P × V × M.'),
-    L('Projektionen ser olika ut per API: OpenGL mappar djup till [−1, 1], D3D12 och Vulkan till [0, 1] – och Vulkans y-axel pekar nedåt.', 'The projection differs per API: OpenGL maps depth to [−1, 1], D3D12 and Vulkan to [0, 1] – and Vulkan’s y axis points down.'),
-    L('Matriserna packas byte för byte i en buffert med en fast layout som både CPU och shader är överens om.', 'The matrices are packed byte by byte into a buffer with a fixed layout that both CPU and shader agree on.'),
-    L('Bufferten kopplas till en numrerad slot. Shadern läser från samma nummer – det är hela kontraktet.', 'The buffer is plugged into a numbered slot. The shader reads from the same number – that is the whole contract.'),
-  ];
-
-  const layout = (animate: boolean) => {
-    const W = stage.clientWidth;
-    const H = stage.clientHeight - 64;
-    if (!W || H <= 0) return;
-    const tw = 62;
-    const th = 46;
-    const tx0 = 20;
-    const ty = 26;
-    const slotX = W * 0.47;
-    const slotW = Math.min(150, W * 0.16);
-    const slotH = 30;
-    const slotY0 = 30;
-    const slotGap = Math.max(36, (H - 40) / 4);
-    const shX = slotX + slotW + 40;
-    const shW = W - shX - 14;
-    const stripW = Math.min(280, W * 0.3);
-    const stripX = step >= 3 ? slotX - stripW - 30 : 20;
-    const stripY = step >= 3 ? slotY0 + (slotH - th) / 2 : H * 0.62;
-    const segW = stripW / 4;
-    const go = (el: Element, p: gsap.TweenVars, delay = 0) => (animate ? gsap.to(el, { ...p, duration: dur(0.8), delay, ease: 'power3.inOut' }) : gsap.set(el, p));
-
-    tiles.forEach((tile, i) => {
-      let p: gsap.TweenVars;
-      if (step >= 2) p = { x: stripX + i * segW + 2, y: stripY, width: segW - 4, height: th, opacity: 1 };
-      else if (i < 3) p = { x: tx0 + i * (tw + 30), y: ty, width: tw, height: th, opacity: 1 };
-      else p = { x: tx0 + 3 * (tw + 30), y: ty, width: tw + 14, height: th, opacity: 1 };
-      go(tile, p, step === 2 ? i * 0.1 : 0);
-    });
-    ops.forEach((o, i) => go(o, { x: tx0 + (i + 1) * (tw + 30) - 22, y: ty + 10, opacity: step >= 2 ? 0 : 1 }));
-    go(strip, { x: stripX - 4, y: stripY - 4, width: stripW + 4, height: th + 8, opacity: step >= 2 ? 1 : 0 });
-    go(align, { x: stripX, y: stripY + th + 10, opacity: step === 2 ? 1 : 0 });
-    slots.forEach((sl, i) => gsap.set(sl, { x: slotX, y: slotY0 + i * slotGap, width: slotW, height: slotH }));
-    gsap.set(rack, { x: slotX, y: slotY0 - 20, width: slotW });
-    gsap.set(shader, { x: shX, y: slotY0 - 8, width: shW });
-    gsap.set(variants, { x: tx0, y: ty + th + 26, width: Math.min(360, W * 0.42) });
-    variants.style.opacity = step === 1 ? '1' : '0';
-
-    // Wires: every slot to the shader, slot 0 to the declaration line.
-    svg.setAttribute('viewBox', `0 0 ${W} ${stage.clientHeight}`);
-    svg.replaceChildren();
-    const declY = slotY0 - 8 + 8 + 18 + 8;
-    wirePaths = slots.map((_, i) => {
-      const y1 = slotY0 + i * slotGap + slotH / 2;
-      const x1 = slotX + slotW;
-      const y2 = i === 0 ? declY : slotY0 + i * slotGap + slotH / 2;
-      const x2 = i === 0 ? shX : shX - 10;
-      const p = s('path', { d: `M${x1},${y1} C${x1 + 24},${y1} ${x2 - 24},${y2} ${x2},${y2}`, class: `dsc-wire${i === 0 ? ' main' : ''}` });
-      svg.append(p);
-      return p;
-    });
-    const fx = stripX + stripW + 2;
-    const fy = stripY + th / 2;
-    feed = s('path', { d: `M${fx},${fy} L${slotX},${slotY0 + slotH / 2}`, class: 'dsc-wire feed' });
-    svg.append(feed);
-    const live = step >= 3;
-    wirePaths[0].classList.toggle('live', live);
-    feed.classList.toggle('live', live);
-    feed.style.opacity = live ? '1' : '0';
-    if (live && motion) {
-      for (const path of [feed, wirePaths[0]]) {
-        const id = `dsc-${Math.random().toString(36).slice(2, 8)}`;
-        path.id = id;
-        for (let k = 0; k < 3; k++) {
-          const c = s('circle', { r: 3.4, class: 'dsc-packet' });
-          const am = s('animateMotion', { dur: '1.5s', repeatCount: 'indefinite', begin: `${k * 0.5}s` });
-          am.append(s('mpath', { href: `#${id}` }));
-          c.append(am);
-          svg.append(c);
-        }
-      }
-    }
-  };
-
-  const apply = (animate: boolean) => {
-    stage.dataset.step = String(step);
-    slots[0].classList.toggle('lit', step >= 3);
-    shader.classList.toggle('lit', step >= 3);
-    layout(animate);
-    if (animate && step === 0 && motion) {
-      gsap.fromTo(tiles.slice(0, 3), { opacity: 0, y: -10 }, { opacity: 1, y: 26, stagger: 0.12, duration: dur(0.4) });
-      gsap.fromTo(tiles[3], { opacity: 0, scale: 0.4 }, { opacity: 1, scale: 1, duration: dur(0.5), delay: 0.6, ease: 'back.out(2)' });
-    }
-    if (animate && step === 1) gsap.fromTo(variants.children, { opacity: 0, x: -12 }, { opacity: 1, x: 0, stagger: 0.12, duration: dur(0.35) });
-    if (animate && step === 1) gsap.fromTo(tiles[2], { rotationY: 0 }, { rotationY: 360, duration: dur(0.9), ease: 'power2.inOut' });
-    if (animate && step === 3) gsap.fromTo(slots[0], { scale: 1.15 }, { scale: 1, duration: dur(0.6), delay: 0.8, ease: 'back.out(3)' });
-    caption.innerHTML = t(captions[step]);
-  };
-
-  const ro = new ResizeObserver(() => layout(false));
-  ro.observe(stage);
-
+  const sc = mvpScene(host, ctx, true, {});
+  const ms = sc.ms;
+  ms.panel(t(L('Vad händer', 'What happens')), [caption], { side: 'bottom', className: 'ds-cap' });
+  const varPanel = ms.panel(t(L('Djup per API', 'Depth per API')), [variants], { side: 'bottom', className: 'ds-var' });
   return {
-    show(st, animate) {
-      step = st;
-      apply(animate);
+    show(step, animate) {
+      caption.innerHTML = t(captions[step]);
+      varPanel.style.display = step === 1 ? '' : 'none';
+      if (animate) gsap.fromTo(caption, { opacity: 0, y: 6 }, { opacity: 1, y: 0, duration: dur(0.35) });
+      sc.show(step, animate);
     },
     destroy() {
-      ro.disconnect();
-      gsap.killTweensOf([...tiles, ...ops, strip, align, slots[0], ...Array.from(variants.children)]);
+      gsap.killTweensOf(caption);
+      sc.destroy();
     },
   };
 }

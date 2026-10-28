@@ -1,8 +1,32 @@
 import gsap from 'gsap';
-import { dur, h, reducedMotion, s } from '../core/dom';
+import {
+  AdditiveBlending,
+  BoxGeometry,
+  Box3,
+  BufferAttribute,
+  BufferGeometry,
+  Color,
+  DoubleSide,
+  EdgesGeometry,
+  Group,
+  LineBasicMaterial,
+  LineDashedMaterial,
+  LineSegments,
+  Mesh,
+  MeshBasicMaterial,
+  PlaneGeometry,
+  Points,
+  ShaderMaterial,
+  Vector3,
+} from 'three';
+import { SHOWCASE_ROT_Y } from '../core/derived';
+import { dur, h } from '../core/dom';
 import { L, type Text } from '../core/i18n';
 import type { ApiId } from '../core/state';
 import { formatBytes, type VertexLayout } from '../pipeline/layout';
+import { createModelStage, secs, type ModelStage } from '../views/ModelStage';
+import { VIEW_MODE } from '../views/pipelineMaterial';
+import { COLORS, label } from '../views/three-helpers';
 import { stat } from '../views/widgets';
 import { standardSlide } from './standard';
 import type { ApiPanelSpec, CodeSnippet, SlideContext, Visual } from './types';
@@ -67,410 +91,454 @@ function firstBytes(l: VertexLayout, n: number): HTMLElement {
 }
 
 /* ------------------------------------------------------------------ */
-/* Real data: RAM → PCIe → VRAM with this mesh's byte counts           */
+/* Particles that follow a PCIe lane: staging → lane → VRAM            */
 /* ------------------------------------------------------------------ */
-function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
+const LANE_VERT = /* glsl */ `
+attribute vec3 aTo;
+attribute float aDelay;
+attribute float aLane;
+uniform float uProgress;
+uniform float uSize;
+uniform float uX0;
+uniform float uX1;
+varying float vT;
+void main() {
+  float t = smoothstep(aDelay, aDelay + 0.4, uProgress);
+  vec3 a = vec3(uX0, aLane, 0.0);
+  vec3 b = vec3(uX1, aLane, 0.0);
+  vec3 p;
+  if (t < 0.15) p = mix(position, a, smoothstep(0.0, 1.0, t / 0.15));
+  else if (t < 0.8) p = mix(a, b, (t - 0.15) / 0.65);
+  else p = mix(b, aTo, smoothstep(0.0, 1.0, (t - 0.8) / 0.2));
+  vT = t;
+  vec4 mv = modelViewMatrix * vec4(p, 1.0);
+  gl_PointSize = uSize * 600.0 / max(-mv.z, 0.1);
+  gl_Position = projectionMatrix * mv;
+}
+`;
+const LANE_FRAG = /* glsl */ `
+uniform vec3 uLaneColor;
+uniform vec3 uEndColor;
+varying float vT;
+void main() {
+  float d = length(gl_PointCoord - 0.5);
+  float a = smoothstep(0.5, 0.0, d);
+  float onLane = step(0.15, vT) * (1.0 - step(0.8, vT));
+  vec3 c = mix(uEndColor, uLaneColor, onLane);
+  gl_FragColor = vec4(c * a, a * 0.9);
+}
+`;
+
+const API_COLOR: Record<ApiId, number> = { opengl: 0x5aa9e6, vulkan: 0xff4d64, d3d12: 0x6cd04a };
+
+/* ------------------------------------------------------------------ */
+/* Both modes: the model streams RAM → staging → PCIe → VRAM           */
+/** Pull the camera back on narrow views so `halfWidth` world units (around the origin) stay in frame. */
+function fitWidth(ms: ModelStage, halfWidth: number): void {
+  const base = ms.camera.position.length();
+  const prev = ms.view.onResize;
+  ms.view.onResize = (w, hh) => {
+    prev?.(w, hh);
+    const tanH = Math.tan((ms.camera.fov * Math.PI) / 360);
+    const need = halfWidth / (tanH * Math.max(0.3, w / hh)) + 0.6;
+    ms.camera.position.setLength(Math.max(base, Math.min(12, need)));
+  };
+}
+
+/* ------------------------------------------------------------------ */
+function uploadVisual(host: HTMLElement, ctx: SlideContext, concept: boolean): Visual {
   const { t } = ctx;
   const api = ctx.state.api;
+  const gl = api === 'opengl';
+  const m = ctx.state.mesh;
   const l = ctx.derived.layout;
   const total = l.vertexBytes + l.indexBytes;
   const al = allocation(api, l);
   const seconds = total / PCIE_BYTES_PER_S;
-  const maxBytes = Math.max(al.vb, al.ib, l.vertexBytes, l.indexBytes);
-  const pct = (n: number) => `${Math.max(1.5, (100 * n) / maxBytes)}%`;
-
-  const stagingName: Record<ApiId, Text> = {
-    opengl: L('drivrutinens kopia', "driver's copy"),
-    vulkan: L('staging-VkBuffer', 'staging VkBuffer'),
-    d3d12: L('UPLOAD-heap-resurs', 'UPLOAD heap resource'),
-  };
-  const stagingFlags: Record<ApiId, string> = {
-    opengl: t(L('görs inuti glNamedBufferStorage', 'made inside glNamedBufferStorage')),
-    vulkan: 'HOST_VISIBLE | HOST_COHERENT',
-    d3d12: 'D3D12_HEAP_TYPE_UPLOAD',
-  };
-  const vramFlags: Record<ApiId, string> = {
-    opengl: t(L('drivrutinen väljer (oftast VRAM)', 'driver decides (usually VRAM)')),
-    vulkan: 'DEVICE_LOCAL',
-    d3d12: 'D3D12_HEAP_TYPE_DEFAULT',
-  };
-  const states: Record<ApiId, [string, string][]> = {
-    opengl: [[t(L('implicit synk', 'implicit sync')), t(L('drivrutinen väntar in kopian före första draw', 'the driver waits for the copy before the first draw'))]],
-    vulkan: [
-      ['TRANSFER_WRITE → VERTEX_ATTRIBUTE_READ', 'VkBufferMemoryBarrier2'],
-      ['TRANSFER_WRITE → INDEX_READ', 'VkBufferMemoryBarrier2'],
-    ],
-    d3d12: [
-      ['COPY_DEST → VERTEX_AND_CONSTANT_BUFFER', 'ResourceBarrier'],
-      ['COPY_DEST → INDEX_BUFFER', 'ResourceBarrier'],
-    ],
-  };
-
-  const bar = (label: string, bytes: number, cls: string, alloc?: number) =>
-    h(`div.bf-buf.${cls}`, {}, [
-      h('div.bf-buf-head', {}, [h('span', { text: label }), h('b.mono', { text: formatBytes(bytes) })]),
-      h('div.bf-track', {}, [
-        alloc && alloc > bytes ? h('i.bf-pad', { style: { width: pct(alloc) } }) : null,
-        h('i.bf-fill', { style: { width: pct(bytes) } }),
-      ]),
-      alloc !== undefined
-        ? h('div.bf-buf-sub', { text: alloc > bytes ? `${t(L('allokerat', 'allocated'))} ${formatBytes(alloc)} · +${formatBytes(alloc - bytes)} padding${al.exact ? '' : ' (≈)'}` : t(L('ingen synlig avrundning', 'no visible rounding')) })
-        : null,
-    ]);
-
-  // CPU RAM column
-  const appVB = bar(`vertices · ${l.stride} B × ${ctx.state.mesh.vertexCount.toLocaleString('en-US')}`, l.vertexBytes, 'vb');
-  const appIB = bar(`indices · ${l.indexType}`, l.indexBytes, 'ib');
-  const staging = h('div.bf-staging', {}, [
-    h('div.bf-tag', { text: t(stagingName[api]) }),
-    h('div.bf-flags.mono', { text: stagingFlags[api] }),
-    h('div.bf-track.st', {}, [h('i.bf-fill.st', { style: { width: '100%' } })]),
-    h('div.bf-buf-sub', { text: `memcpy ${formatBytes(total)}` }),
-  ]);
-  const ram = h('div.bf-col.bf-ram', {}, [
-    h('div.bf-col-title', {}, [h('span.bf-dot.cpu'), t(L('System-RAM · CPU', 'System RAM · CPU'))]),
-    appVB,
-    appIB,
-    h('div.bf-hex-wrap', {}, [h('div.bf-hex-k', { text: t(L('första 16 bytes', 'first 16 bytes')) }), firstBytes(l, 16)]),
-    staging,
-  ]);
-
-  // PCIe column
-  const lanes = s('svg', { class: 'bf-lanes', viewBox: '0 0 200 160', preserveAspectRatio: 'none' });
-  const laneEls: SVGPathElement[] = [];
-  for (let i = 0; i < 8; i++) {
-    const y = 20 + i * 17;
-    const p = s('path', { d: `M0,${y} L200,${y}`, class: 'bf-lane' });
-    laneEls.push(p);
-    lanes.append(p);
-  }
-  const pcie = h('div.bf-col.bf-pcie', {}, [
-    h('div.bf-col-title', {}, [t(api === 'opengl' ? L('PCIe · drivrutinens DMA', 'PCIe · driver DMA') : L('PCIe · kopiering', 'PCIe · copy'))]),
-    h('div.bf-lane-host', {}, [lanes]),
-    h('div.bf-speed', {}, [
-      h('div.mono', { text: 'PCIe 4.0 ×16 ≈ 25 GB/s' }),
-      h('div.bf-time.glow-amber', { text: `≈ ${fmtTime(seconds)}` }),
-      h('div.bf-buf-sub', { text: t(L('teoretiskt; + några µs uppstart per kopia', 'theoretical; + a few µs setup per copy')) }),
-    ]),
-  ]);
-
-  // VRAM column
-  const vramVB = bar('vertex buffer', l.vertexBytes, 'vb', al.vb);
-  const vramIB = bar('index buffer', l.indexBytes, 'ib', al.ib);
-  const stateEls = states[api].map(([a, b]) => h('div.bf-state', {}, [h('span.mono', { text: a }), h('small', { text: b })]));
-  const vram = h('div.bf-col.bf-vram', {}, [
-    h('div.bf-col-title', {}, [h('span.bf-dot.gpu'), t(L('VRAM · GPU', 'VRAM · GPU')), h('span.bf-flags.mono', { text: vramFlags[api] })]),
-    vramVB,
-    vramIB,
-    h('div.bf-rule', { text: t(al.rule) }),
-    h('div.bf-states', {}, stateEls),
-  ]);
-
-  const statsRow = h('div.stat-row.bf-stats', {}, [
-    stat(formatBytes(l.vertexBytes), 'vertex buffer', 'glow-cyan'),
-    stat(formatBytes(l.indexBytes), `index buffer · ${l.indexType}`),
-    stat(`${al.exact ? '' : '≈ '}${formatBytes(al.vb + al.ib)}`, t(L('i VRAM', 'in VRAM')), 'glow-magenta'),
-    stat(`≈ ${fmtTime(seconds)}`, t(L('över PCIe', 'over PCIe')), 'glow-amber'),
-  ]);
-  const grid = h('div.bf-grid', {}, [ram, pcie, vram]);
-  const root = h('div.bf-root', {}, [statsRow, grid]);
-  host.append(root);
-
-  const fills = [vramVB, vramIB].map((b) => b.querySelector<HTMLElement>('.bf-fill')!);
-  const pads = [vramVB, vramIB].map((b) => b.querySelector<HTMLElement>('.bf-pad'));
-  let tweens: gsap.core.Animation[] = [];
-
-  return {
-    show(step, animate) {
-      tweens.forEach((tw) => tw.kill());
-      tweens = [];
-      const vis = (el: HTMLElement, on: boolean) => el.classList.toggle('off', !on);
-      vis(vramVB, step >= 1);
-      vis(vramIB, step >= 1);
-      vram.classList.toggle('alloc', step >= 1);
-      vis(staging, step >= 2);
-      vis(pcie, step >= 3);
-      pcie.classList.toggle('live', step === 3);
-      vram.classList.toggle('ready', step >= 4);
-      stateEls.forEach((e) => vis(e, step >= 4));
-      ram.classList.toggle('cur', step === 0 || step === 2);
-      vram.classList.toggle('cur', step === 1 || step >= 3);
-      // VRAM contents: empty until the copy (step 3).
-      fills.forEach((f) => (f.style.transform = `scaleX(${step >= 3 ? 1 : 0})`));
-      pads.forEach((p) => p && (p.style.opacity = step >= 1 ? '1' : '0'));
-      if (!animate) return;
-      if (step === 1) tweens.push(gsap.fromTo([vramVB, vramIB], { opacity: 0, x: 20 }, { opacity: 1, x: 0, stagger: 0.12, duration: dur(0.5) }));
-      if (step === 2) tweens.push(gsap.fromTo(staging.querySelector('.bf-fill'), { scaleX: 0 }, { scaleX: 1, duration: dur(1.1), ease: 'power2.inOut', transformOrigin: 'left' }));
-      if (step === 3) {
-        tweens.push(gsap.fromTo(fills, { scaleX: 0 }, { scaleX: 1, duration: dur(1.6), ease: 'power1.inOut', stagger: 0.25, delay: dur(0.3) }));
-        tweens.push(gsap.fromTo(laneEls, { opacity: 0.2 }, { opacity: 1, duration: dur(0.25), stagger: { each: 0.04, repeat: 3, yoyo: true } }));
-      }
-      if (step === 4) tweens.push(gsap.fromTo(stateEls, { opacity: 0, y: 8 }, { opacity: 1, y: 0, stagger: 0.15, duration: dur(0.4) }));
-    },
-    destroy() {
-      tweens.forEach((tw) => tw.kill());
-    },
-  };
-}
-
-/* ------------------------------------------------------------------ */
-/* Concept: packets fly from system RAM across the PCIe bus into VRAM  */
-/* ------------------------------------------------------------------ */
-interface Pkt {
-  t: number; // 0..1 along its route
-  speed: number;
-  lane: number;
-  route: 0 | 1; // 0 = app → staging, 1 = staging → VRAM
-  hue: number;
-}
-
-function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
-  const { t } = ctx;
-  const api = ctx.state.api;
-  const gl = api === 'opengl';
-  const wrap = h('div.v-fill.bf-concept');
-  const canvas = h('canvas.bf-canvas');
-  const caption = h('div.bf-caption');
-  wrap.append(canvas, caption);
-  host.append(wrap);
-  const g = canvas.getContext('2d')!;
-  const apiColor = { opengl: '#5aa9e6', vulkan: '#ff4d64', d3d12: '#6cd04a' }[api];
-
-  let W = 0;
-  let H = 0;
-  const R = { ram: { x: 0, y: 0, w: 0, h: 0 }, app: { x: 0, y: 0, w: 0, h: 0 }, stg: { x: 0, y: 0, w: 0, h: 0 }, gpu: { x: 0, y: 0, w: 0, h: 0 }, buf: { x: 0, y: 0, w: 0, h: 0 }, die: { x: 0, y: 0, w: 0, h: 0 }, bus: { x0: 0, x1: 0, y0: 0, y1: 0 } };
-  const layout = () => {
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    W = wrap.clientWidth;
-    H = wrap.clientHeight;
-    canvas.width = Math.round(W * dpr);
-    canvas.height = Math.round(H * dpr);
-    g.setTransform(dpr, 0, 0, dpr, 0, 0);
-    const top = 30;
-    const bottom = H - 62;
-    const hh = bottom - top;
-    const colW = Math.min(W * 0.3, 300);
-    R.ram = { x: 16, y: top, w: colW, h: hh };
-    R.gpu = { x: W - 16 - colW, y: top, w: colW, h: hh };
-    R.app = { x: R.ram.x + 14, y: top + 34, w: colW - 28, h: hh * 0.3 };
-    R.stg = { x: R.ram.x + 14, y: top + 34 + hh * 0.3 + 18, w: colW - 28, h: hh * 0.3 };
-    R.buf = { x: R.gpu.x + 14, y: top + 34, w: colW - 28, h: hh * 0.38 };
-    R.die = { x: R.gpu.x + colW * 0.28, y: R.buf.y + R.buf.h + 22, w: colW * 0.44, h: Math.max(30, bottom - (R.buf.y + R.buf.h + 22) - 12) };
-    R.bus = { x0: R.ram.x + R.ram.w, x1: R.gpu.x, y0: R.stg.y + 6, y1: R.stg.y + R.stg.h - 6 };
-  };
-
-  let step = 0;
-  const fill = { stg: 0, buf: 0, ready: 0, alloc: 0 };
-  const pkts: Pkt[] = [];
-  let spawnAcc = 0;
-  const still = reducedMotion();
-
-  const lerp = (a: number, b: number, k: number) => a + (b - a) * k;
-  const routePos = (p: Pkt): [number, number] => {
-    if (p.route === 0) {
-      // app array → staging (a short hop down inside RAM)
-      const sx = R.app.x + R.app.w * (0.15 + 0.7 * p.hue);
-      const sy = R.app.y + R.app.h * 0.6;
-      const ex = R.stg.x + R.stg.w * (0.15 + 0.7 * p.hue);
-      const ey = R.stg.y + R.stg.h * 0.5;
-      const k = p.t;
-      return [lerp(sx, ex, k) + Math.sin(k * Math.PI) * 24, lerp(sy, ey, k)];
-    }
-    const laneY = lerp(R.bus.y0, R.bus.y1, (p.lane + 0.5) / 8);
-    const sx = R.stg.x + R.stg.w * 0.85;
-    const ex = R.buf.x + R.buf.w * (0.1 + 0.8 * p.hue);
-    const ey = R.buf.y + R.buf.h * 0.55;
-    const k = p.t;
-    if (k < 0.12) return [lerp(sx, R.bus.x0, k / 0.12), laneY];
-    if (k < 0.82) return [lerp(R.bus.x0, R.bus.x1, (k - 0.12) / 0.7), laneY];
-    const k2 = (k - 0.82) / 0.18;
-    return [lerp(R.bus.x1, ex, k2), lerp(laneY, ey, k2 * k2)];
-  };
-
-  const box = (r: { x: number; y: number; w: number; h: number }, stroke: string, fillStyle: string, glow = 0, dash = false) => {
-    g.save();
-    g.beginPath();
-    g.roundRect(r.x, r.y, r.w, r.h, 12);
-    g.fillStyle = fillStyle;
-    g.fill();
-    if (glow) {
-      g.shadowColor = stroke;
-      g.shadowBlur = glow;
-    }
-    if (dash) g.setLineDash([6, 5]);
-    g.strokeStyle = stroke;
-    g.lineWidth = 1.5;
-    g.stroke();
-    g.restore();
-  };
-  const text = (s2: string, x: number, y: number, color: string, size = 11, align: CanvasTextAlign = 'left', weight = 600) => {
-    g.fillStyle = color;
-    g.font = `${weight} ${size}px Inter, system-ui, sans-serif`;
-    g.textAlign = align;
-    g.fillText(s2, x, y);
-  };
-  const cells = (r: { x: number; y: number; w: number; h: number }, level: number, colorA: string, colorB: string, time: number) => {
-    const cols = Math.max(6, Math.floor(r.w / 16));
-    const rows = Math.max(2, Math.floor((r.h - 26) / 14));
-    const cw = (r.w - 16) / cols;
-    const ch = (r.h - 28) / rows;
-    const n = cols * rows;
-    const lit = Math.round(n * level);
-    for (let i = 0; i < n; i++) {
-      const cx = r.x + 8 + (i % cols) * cw;
-      const cy = r.y + 22 + Math.floor(i / cols) * ch;
-      const on = i < lit;
-      g.fillStyle = on ? ((i % 3) === 2 ? colorB : colorA) : 'rgba(140,160,255,0.08)';
-      g.globalAlpha = on ? 0.55 + 0.35 * Math.sin(time * 3 + i * 0.7) ** 2 : 1;
-      g.fillRect(cx + 1, cy + 1, cw - 3, ch - 3);
-    }
-    g.globalAlpha = 1;
-  };
-
-  const draw = (time: number) => {
-    g.clearRect(0, 0, W, H);
-    // --- RAM ---
-    box(R.ram, 'rgba(56,225,255,0.55)', 'rgba(56,225,255,0.05)', step === 0 || step === 2 ? 16 : 0);
-    text(t(L('SYSTEM-RAM (CPU)', 'SYSTEM RAM (CPU)')), R.ram.x + 14, R.ram.y + 20, '#38e1ff', 11, 'left', 800);
-    // DIMM chips decoration along the bottom
-    const chipY = R.ram.y + R.ram.h - 18;
-    for (let i = 0; i < 8; i++) {
-      g.fillStyle = 'rgba(56,225,255,0.12)';
-      g.fillRect(R.ram.x + 14 + i * ((R.ram.w - 28) / 8), chipY, (R.ram.w - 28) / 8 - 4, 10);
-    }
-    box(R.app, 'rgba(56,225,255,0.4)', 'rgba(4,6,16,0.7)');
-    text(t(L('dina arrayer: vertices + index', 'your arrays: vertices + indices')), R.app.x + 8, R.app.y + 14, '#9aa3c7', 10.5);
-    cells(R.app, 1, '#38e1ff', '#5cf08f', time);
-    if (step >= 2) {
-      box(R.stg, gl ? 'rgba(155,123,255,0.7)' : apiColor, 'rgba(4,6,16,0.7)', step === 2 ? 14 : 0);
-      text(gl ? t(L('drivrutinens staging-kopia', "driver's staging copy")) : api === 'vulkan' ? 'staging · HOST_VISIBLE' : 'staging · UPLOAD heap', R.stg.x + 8, R.stg.y + 14, gl ? '#9b7bff' : apiColor, 10.5);
-      cells(R.stg, fill.stg, '#9fdcff', '#a8ffc6', time);
-    }
-
-    // --- PCIe bus ---
-    const busOn = step >= 3;
-    for (let i = 0; i < 8; i++) {
-      const y = lerp(R.bus.y0, R.bus.y1, (i + 0.5) / 8);
-      g.strokeStyle = busOn ? `rgba(255,181,71,${0.25 + 0.2 * Math.sin(time * 4 + i)})` : 'rgba(140,160,255,0.12)';
-      g.lineWidth = 2;
-      g.beginPath();
-      g.moveTo(R.bus.x0, y);
-      g.lineTo(R.bus.x1, y);
-      g.stroke();
-    }
-    const busMid = (R.bus.x0 + R.bus.x1) / 2;
-    text('PCIe 4.0 ×16', busMid, R.bus.y0 - 12, busOn ? '#ffb547' : '#646d94', 11, 'center', 800);
-    text(gl ? t(L('DMA styrd av drivrutinen', 'DMA driven by the driver')) : api === 'vulkan' ? 'vkCmdCopyBuffer' : 'CopyBufferRegion', busMid, R.bus.y1 + 20, busOn ? '#e8ebff' : '#646d94', 11, 'center', 600);
-
-    // --- GPU ---
-    box(R.gpu, 'rgba(255,63,210,0.55)', 'rgba(255,63,210,0.05)', step === 1 || step >= 3 ? 16 : 0);
-    text(t(L('VRAM (GPU)', 'VRAM (GPU)')), R.gpu.x + 14, R.gpu.y + 20, '#ff3fd2', 11, 'left', 800);
-    if (step >= 1) {
-      const ready = fill.ready;
-      box(R.buf, ready > 0.5 ? '#5cf08f' : 'rgba(255,63,210,0.8)', 'rgba(4,6,16,0.7)', ready > 0.5 ? 18 : 0, fill.buf < 0.02);
-      text(gl ? 'GL buffer object' : api === 'vulkan' ? 'VkBuffer · DEVICE_LOCAL' : 'DEFAULT heap', R.buf.x + 8, R.buf.y + 14, ready > 0.5 ? '#5cf08f' : '#ff3fd2', 10.5);
-      g.globalAlpha = fill.alloc;
-      cells(R.buf, fill.buf, '#38e1ff', '#5cf08f', time);
-      g.globalAlpha = 1;
-    }
-    // GPU die
-    const d = R.die;
-    box(d, step >= 4 ? '#5cf08f' : 'rgba(255,63,210,0.5)', 'rgba(20,10,30,0.9)', step >= 4 ? 10 + 6 * Math.sin(time * 4) : 0);
-    text('GPU', d.x + d.w / 2, d.y + d.h / 2 + (step >= 4 ? -3 : 4), step >= 4 ? '#5cf08f' : '#ff3fd2', 13, 'center', 800);
-    if (step >= 4) {
-      // vertex fetch: arrows from the buffer down into the die
-      const k = (time * 1.4) % 1;
-      for (let i = 0; i < 3; i++) {
-        const x = d.x + d.w * (0.25 + i * 0.25);
-        const y = lerp(R.buf.y + R.buf.h, d.y, (k + i * 0.33) % 1);
-        g.fillStyle = '#5cf08f';
-        g.shadowColor = '#5cf08f';
-        g.shadowBlur = 10;
-        g.fillRect(x - 3, y - 3, 6, 6);
-        g.shadowBlur = 0;
-      }
-      text(gl ? t(L('implicit synk ✓', 'implicit sync ✓')) : t(L('barriär ✓', 'barrier ✓')), d.x + d.w / 2, d.y + d.h / 2 + 13, '#5cf08f', 10.5, 'center');
-    }
-
-    // --- packets ---
-    for (const p of pkts) {
-      const [x, y] = routePos(p);
-      const c = p.route === 0 ? (gl ? '#9b7bff' : apiColor) : '#ffb547';
-      g.save();
-      g.shadowColor = c;
-      g.shadowBlur = 12;
-      g.fillStyle = c;
-      g.fillRect(x - 4, y - 4, 8, 8);
-      g.restore();
-    }
-  };
-
-  let raf = 0;
-  let last = performance.now();
-  const t0 = last;
-  const frame = (now: number) => {
-    const dt = Math.min(0.05, (now - last) / 1000);
-    last = now;
-    if (!still) {
-      spawnAcc += dt;
-      const streaming = (step === 2 && fill.stg < 1) || (step === 3 && fill.buf < 1);
-      if (streaming && spawnAcc > 0.05) {
-        spawnAcc = 0;
-        pkts.push({ t: 0, speed: step === 2 ? 1.4 : 0.9, lane: Math.floor(Math.random() * 8), route: step === 2 ? 0 : 1, hue: Math.random() });
-      }
-      for (const p of pkts) p.t += p.speed * dt;
-      for (let i = pkts.length - 1; i >= 0; i--) {
-        const p = pkts[i];
-        if (p.t < 1) continue;
-        pkts.splice(i, 1);
-        if (p.route === 0) fill.stg = Math.min(1, fill.stg + 0.025);
-        else fill.buf = Math.min(1, fill.buf + 0.02);
-      }
-    }
-    draw((now - t0) / 1000);
-    raf = requestAnimationFrame(frame);
-  };
-  const ro = new ResizeObserver(() => {
-    layout();
-    draw((performance.now() - t0) / 1000);
+  const ms = createModelStage(host, ctx, {
+    eye: [0, 1.0, 5.6],
+    autoRotate: 0,
+    bloom: 0.6,
+    bloomThreshold: 0.84,
+    layers: { solid: 1, wire: 0.12, points: 0, normals: 0 },
+    orbit: true,
   });
-  ro.observe(wrap);
-  layout();
-  raf = requestAnimationFrame(frame);
+  ms.overlay.classList.add('bf-ms');
+  fitWidth(ms, 3.0);
+  const u = ms.material.uniforms;
+  const v = new Vector3();
 
+  /* ---- layout (world units) ---- */
+  const S_MODEL = 0.62;
+  const Y0 = 0.22; // lift the scene into the band between the panels
+  const RAM_C: [number, number, number] = [-1.8, Y0, 0];
+  const VRAM_C: [number, number, number] = [1.95, Y0, 0];
+  const LANE_X0 = -0.65;
+  const LANE_X1 = 1.15;
+  const STG_C: [number, number, number] = [-1.02, Y0 - 0.4, 0.05];
+  const LANE_Y = (i: number) => Y0 - 0.62 + (i / 7) * 0.36;
+
+  ms.pivot.position.set(-2.28, Y0 + 0.1, 0);
+  ms.pivot.scale.setScalar(S_MODEL);
+
+  const ramBox = ms.box(t(L('System-RAM · CPU', 'System RAM · CPU')), RAM_C, [2.3, 1.6, 1.0], COLORS.cyan);
+  const vramName = gl ? t(L('VRAM · drivrutinen väljer', 'VRAM · driver decides')) : api === 'vulkan' ? 'VRAM · DEVICE_LOCAL' : 'VRAM · DEFAULT heap';
+  const vramBox = ms.box(vramName, VRAM_C, [1.6, 1.6, 1.0], COLORS.magenta);
+  const stgName = gl ? t(L('drivrutinens kopia', "driver's copy")) : api === 'vulkan' ? 'staging · HOST_VISIBLE' : 'UPLOAD heap';
+  const stgBox = ms.box(stgName, STG_C, [0.55, 0.42, 0.42], gl ? COLORS.violet : API_COLOR[api]);
+  [ramBox, vramBox, stgBox].forEach((g) =>
+    g.traverse((o) => {
+      if (o instanceof Mesh) (o.material as MeshBasicMaterial).opacity = 0.012;
+    }),
+  );
+  const boxEdges = (g: Group) => g.children.find((o) => o instanceof LineSegments) as LineSegments;
+  const edgeMat = (g: Group) => boxEdges(g).material as LineBasicMaterial;
+
+  // PCIe lanes: thin glowing bars between the two boxes.
+  const laneMat = new MeshBasicMaterial({ color: COLORS.amber, transparent: true, opacity: 0.18, blending: AdditiveBlending, depthWrite: false });
+  const lanes = new Group();
+  for (let i = 0; i < 8; i++) {
+    const bar = new Mesh(new BoxGeometry(LANE_X1 - LANE_X0, 0.014, 0.014), laneMat);
+    bar.position.set((LANE_X0 + LANE_X1) / 2, LANE_Y(i), 0);
+    lanes.add(bar);
+  }
+  const copyName = gl ? t(L('DMA · drivrutinen', 'DMA · driver')) : api === 'vulkan' ? 'vkCmdCopyBuffer' : 'CopyBufferRegion';
+  const laneLbl = label(`PCIe 4.0 ×16 · ${copyName}`, 'amber');
+  laneLbl.position.set((LANE_X0 + LANE_X1) / 2, LANE_Y(0) - 0.2, 0);
+  lanes.add(laneLbl);
+  ms.scene.add(lanes);
+
+  // The model again, in VRAM: same geometry, its own opacity / mode.
+  const vMat = ms.material.clone() as typeof ms.material;
+  vMat.uniforms = { ...u, uOpacity: { value: 0 }, uMode: { value: 0 }, uModeMix: { value: 0 }, uSweep: { value: 100 } };
+  vMat.transparent = true;
+  const vWireMat = new LineBasicMaterial({ color: COLORS.magenta, transparent: true, opacity: 0, depthWrite: false });
+  const vModel = new Group();
+  vModel.rotation.order = 'YXZ';
+  vModel.rotation.copy(ms.pivot.rotation);
+  vModel.position.set(VRAM_C[0], Y0 + 0.1, 0);
+  vModel.scale.setScalar(S_MODEL);
+  const vSolid = new Mesh(ms.layers.solid.geometry, vMat);
+  vModel.add(vSolid, new LineSegments(ms.layers.wire.geometry, vWireMat));
+  ms.scene.add(vModel);
+
+  // Allocation in VRAM: the data (solid outline) inside what was really allocated (dashed, with padding).
+  ms.scene.updateMatrixWorld(true);
+  const bb = new Box3().setFromObject(vSolid, true);
+  const bc = bb.getCenter(new Vector3());
+  const bs = bb.getSize(new Vector3()).addScalar(0.08);
+  // Volume ∝ bytes; tiny paddings are exaggerated a little so they stay visible (the label has the truth).
+  const padded = al.vb + al.ib > total;
+  const allocK = padded ? Math.min(1.3, Math.max(1.07, Math.cbrt((al.vb + al.ib) / Math.max(1, total)))) : 1;
+  const dataEdges = new LineSegments(new EdgesGeometry(new BoxGeometry(bs.x, bs.y, bs.z)), new LineBasicMaterial({ color: COLORS.cyan, transparent: true, opacity: 0 }));
+  const allocEdges = new LineSegments(new EdgesGeometry(new BoxGeometry(bs.x * allocK, bs.y * allocK, bs.z * allocK)), new LineDashedMaterial({ color: COLORS.magenta, dashSize: 0.06, gapSize: 0.05, transparent: true, opacity: 0 }));
+  allocEdges.computeLineDistances();
+  const alloc = new Group();
+  alloc.add(dataEdges, allocEdges);
+  alloc.position.copy(bc);
+  const allocLbl = label(
+    padded ? `${al.exact ? '' : '≈ '}${formatBytes(al.vb + al.ib)} ${t(L('allokerat', 'allocated'))} · +${formatBytes(al.vb + al.ib - total)} padding` : `${formatBytes(total)} · ${t(L('ingen synlig avrundning', 'no visible rounding'))}`,
+    'magenta',
+  );
+  allocLbl.position.set(0, (bs.y * allocK) / 2 + 0.1, 0);
+  alloc.add(allocLbl);
+  ms.scene.add(alloc);
+  const allocState = { k: 0 };
+  const applyAlloc = () => {
+    const k = allocState.k;
+    alloc.visible = k > 0.01;
+    alloc.scale.setScalar(0.3 + 0.7 * k);
+    (dataEdges.material as LineBasicMaterial).opacity = 0.6 * k;
+    (allocEdges.material as LineDashedMaterial).opacity = 0.9 * k;
+    allocLbl.visible = k > 0.5 && step < 3;
+  };
+
+  // The barrier: a gate in front of the VRAM copy, closed (red) until the copy is visible.
+  const gate = new Group();
+  gate.position.set(VRAM_C[0], Y0, 0.56);
+  const gateMat = new MeshBasicMaterial({ color: COLORS.red, transparent: true, opacity: 0.16, depthWrite: false, side: DoubleSide });
+  const gateEdgeMat = new LineBasicMaterial({ color: COLORS.red, transparent: true, opacity: 0.9 });
+  const halves = [-1, 1].map((sgn) => {
+    const hinge = new Group();
+    hinge.position.x = sgn * 0.74;
+    const pg = new PlaneGeometry(0.74, 1.46);
+    const leaf = new Mesh(pg, gateMat);
+    leaf.position.x = -sgn * 0.37;
+    const edge = new LineSegments(new EdgesGeometry(pg), gateEdgeMat);
+    edge.position.copy(leaf.position);
+    // Horizontal bars, like a shutter.
+    const barsGeo = new BufferGeometry();
+    const pts: number[] = [];
+    for (let k = 1; k < 8; k++) pts.push(-0.37, -0.73 + k * 0.1825, 0, 0.37, -0.73 + k * 0.1825, 0);
+    barsGeo.setAttribute('position', new BufferAttribute(new Float32Array(pts), 3));
+    const bars = new LineSegments(barsGeo, gateEdgeMat);
+    bars.position.copy(leaf.position);
+    hinge.add(leaf, edge, bars);
+    gate.add(hinge);
+    return hinge;
+  });
+  const gateName = gl ? t(L('implicit synk · drivrutinen', 'implicit sync · driver')) : api === 'vulkan' ? 'vkCmdPipelineBarrier2' : 'ResourceBarrier';
+  const gateLbl = label(gateName, 'big');
+  gateLbl.position.set(0, -0.98, 0);
+  gate.add(gateLbl);
+  ms.scene.add(gate);
+  const gateState = { open: 0 };
+  const red = new Color(COLORS.red);
+  const green = new Color(COLORS.green);
+  const applyGate = () => {
+    const k = gateState.open;
+    halves.forEach((hg) => (hg.scale.x = Math.max(0.04, 1 - k)));
+    gateMat.color.copy(red).lerp(green, Math.min(1, k * 2));
+    gateEdgeMat.color.copy(gateMat.color);
+    gateMat.opacity = 0.16 * (1 - k * 0.6);
+  };
+
+  /* ---- particle streams ---- */
+  const N = Math.min(2000, Math.max(400, m.vertexCount));
+  const side = Math.ceil(Math.cbrt(N));
+  const lattice = new Float32Array(N * 3);
+  for (let i = 0; i < N; i++) {
+    lattice[i * 3] = STG_C[0] + ((i % side) / (side - 1 || 1) - 0.5) * 0.44;
+    lattice[i * 3 + 1] = STG_C[1] + ((Math.floor(i / side) % side) / (side - 1 || 1) - 0.5) * 0.34;
+    lattice[i * 3 + 2] = STG_C[2] + ((Math.floor(i / (side * side)) % side) / (side - 1 || 1) - 0.5) * 0.34;
+  }
+  const samples = ms.samplePositions(N);
+  const inWorld = (obj: Group) => {
+    obj.updateMatrixWorld(true);
+    const out = new Float32Array(N * 3);
+    for (let i = 0; i < N; i++) v.fromArray(samples, i * 3).applyMatrix4(obj.matrixWorld).toArray(out, i * 3);
+    return out;
+  };
+  // memcpy: app arrays → staging.
+  const memcpy = ms.particles(N, gl ? COLORS.violet : API_COLOR[api], 0.026, 'world');
+  // DMA: staging → lanes → VRAM.
+  const busGeo = new BufferGeometry();
+  const busTo = new Float32Array(N * 3);
+  const busDelay = new Float32Array(N);
+  const busLane = new Float32Array(N);
+  for (let i = 0; i < N; i++) {
+    busDelay[i] = (i / N) * 0.6;
+    busLane[i] = LANE_Y(i % 8);
+  }
+  busGeo.setAttribute('position', new BufferAttribute(lattice.slice(), 3));
+  busGeo.setAttribute('aTo', new BufferAttribute(busTo, 3));
+  busGeo.setAttribute('aDelay', new BufferAttribute(busDelay, 1));
+  busGeo.setAttribute('aLane', new BufferAttribute(busLane, 1));
+  const busMat = new ShaderMaterial({
+    vertexShader: LANE_VERT,
+    fragmentShader: LANE_FRAG,
+    transparent: true,
+    depthWrite: false,
+    blending: AdditiveBlending,
+    uniforms: {
+      uProgress: { value: 0 },
+      uSize: { value: 0.03 },
+      uX0: { value: LANE_X0 },
+      uX1: { value: LANE_X1 },
+      uLaneColor: { value: new Color(COLORS.amber) },
+      uEndColor: { value: new Color(COLORS.cyan) },
+    },
+  });
+  const bus = new Points(busGeo, busMat);
+  bus.frustumCulled = false;
+  ms.scene.add(bus);
+
+  /* ---- panels ---- */
+  const keyStats: HTMLElement[][] = [
+    [stat(formatBytes(l.vertexBytes), `vertex buffer · ${l.stride} B × ${m.vertexCount.toLocaleString('en-US')}`, 'glow-cyan'), stat(formatBytes(l.indexBytes), `index buffer · ${l.indexType}`, 'glow-green')],
+    [stat(`${al.exact ? '' : '≈ '}${formatBytes(al.vb + al.ib)}`, t(L('allokerat i VRAM', 'allocated in VRAM')), 'glow-magenta'), stat(`+${formatBytes(al.vb + al.ib - total)}`, 'padding'), stat(api === 'd3d12' ? '64 KiB' : api === 'vulkan' ? 'req.alignment' : t(L('dolt', 'hidden')), 'alignment')],
+    [stat(formatBytes(total), 'memcpy', 'glow-cyan'), stat(gl ? t(L('i drivrutinen', 'in the driver')) : api === 'vulkan' ? 'HOST_VISIBLE' : 'UPLOAD', 'staging')],
+    [stat(`≈ ${fmtTime(seconds)}`, t(L('över PCIe', 'over PCIe')), 'glow-amber'), stat(formatBytes(total), t(L('kopieras', 'copied'))), stat('≈ 25 GB/s', 'PCIe 4.0 ×16')],
+    [stat(gl ? t(L('implicit', 'implicit')) : t(L('explicit', 'explicit')), t(L('barriär', 'barrier')), 'glow-green'), stat(`${al.exact ? '' : '≈ '}${formatBytes(al.vb + al.ib)}`, t(L('redo i VRAM', 'ready in VRAM')), 'glow-magenta')],
+  ];
+  const keyPanel = ms.panel(t(L('Nyckeltal', 'Key numbers')), [h('div.stat-row.bf-keys')], { side: 'top', className: 'bf-key' });
+  const keyRow = keyPanel.querySelector('.bf-keys')!;
+
+  const details: HTMLElement[] = [];
+  let caption: Element | null = null;
+  const fills: HTMLElement[] = [];
+  let stagingEl: HTMLElement | null = null;
+  let stateEls: HTMLElement[] = [];
+  if (!concept) {
+    const maxBytes = Math.max(al.vb, al.ib, l.vertexBytes, l.indexBytes);
+    const pct = (n: number) => `${Math.max(1.5, (100 * n) / maxBytes)}%`;
+    const bar = (lbl: string, bytes: number, cls: string, allocB?: number) =>
+      h(`div.bf-buf.${cls}`, {}, [
+        h('div.bf-buf-head', {}, [h('span', { text: lbl }), h('b.mono', { text: formatBytes(bytes) })]),
+        h('div.bf-track', {}, [allocB && allocB > bytes ? h('i.bf-pad', { style: { width: pct(allocB) } }) : null, h('i.bf-fill', { style: { width: pct(bytes) } })]),
+        allocB !== undefined && allocB > bytes ? h('div.bf-buf-sub', { text: `${t(L('allokerat', 'allocated'))} ${formatBytes(allocB)} · +${formatBytes(allocB - bytes)}${al.exact ? '' : ' (≈)'}` }) : null,
+      ]);
+    const stagingFlags: Record<ApiId, string> = {
+      opengl: t(L('görs inuti glNamedBufferStorage', 'made inside glNamedBufferStorage')),
+      vulkan: 'HOST_VISIBLE | HOST_COHERENT',
+      d3d12: 'D3D12_HEAP_TYPE_UPLOAD',
+    };
+    stagingEl = h('div.bf-staging', {}, [h('div.bf-tag', { text: stgName }), h('div.bf-flags.mono', { text: stagingFlags[api] }), h('div.bf-buf-sub', { text: `memcpy ${formatBytes(total)}` })]);
+    const ramPanel = ms.panel(t(L('System-RAM · CPU', 'System RAM · CPU')), [
+      bar(`vertices · ${l.stride} B × ${m.vertexCount.toLocaleString('en-US')}`, l.vertexBytes, 'vb'),
+      bar(`indices · ${l.indexType}`, l.indexBytes, 'ib'),
+      h('div.bf-hex-wrap', {}, [h('div.bf-hex-k', { text: t(L('första 16 bytes', 'first 16 bytes')) }), firstBytes(l, 16)]),
+      stagingEl,
+    ], { side: 'bottom', className: 'bf-detail.bf-c-ram' });
+    const pciePanel = ms.panel(t(gl ? L('PCIe · drivrutinens DMA', 'PCIe · driver DMA') : L('PCIe · kopiering', 'PCIe · copy')), [
+      h('div.bf-speed', {}, [
+        h('div.mono', { text: 'PCIe 4.0 ×16 ≈ 25 GB/s' }),
+        h('div.bf-time.glow-amber', { text: `≈ ${fmtTime(seconds)}` }),
+        h('div.bf-buf-sub', { text: `${formatBytes(total)} · ${t(L('teoretiskt; + några µs uppstart per kopia', 'theoretical; + a few µs setup per copy'))}` }),
+      ]),
+    ], { side: 'bottom', className: 'bf-detail.bf-c-pcie' });
+    const states: Record<ApiId, [string, string][]> = {
+      opengl: [[t(L('implicit synk', 'implicit sync')), t(L('drivrutinen väntar in kopian före första draw', 'the driver waits for the copy before the first draw'))]],
+      vulkan: [
+        ['TRANSFER_WRITE → VERTEX_ATTRIBUTE_READ', 'VkBufferMemoryBarrier2'],
+        ['TRANSFER_WRITE → INDEX_READ', 'VkBufferMemoryBarrier2'],
+      ],
+      d3d12: [
+        ['COPY_DEST → VERTEX_AND_CONSTANT_BUFFER', 'ResourceBarrier'],
+        ['COPY_DEST → INDEX_BUFFER', 'ResourceBarrier'],
+      ],
+    };
+    stateEls = states[api].map(([a, b]) => h('div.bf-state', {}, [h('span.mono', { text: a }), h('small', { text: b })]));
+    const vb = bar('vertex buffer', l.vertexBytes, 'vb', al.vb);
+    const ib = bar('index buffer', l.indexBytes, 'ib', al.ib);
+    fills.push(...[vb, ib].map((x) => x.querySelector<HTMLElement>('.bf-fill')!));
+    const vramPanel = ms.panel(vramName, [vb, ib, h('div.bf-rule', { text: t(al.rule) }), h('div.bf-states', {}, stateEls)], { side: 'bottom', className: 'bf-detail.bf-c-vram' });
+    details.push(ramPanel, pciePanel, vramPanel);
+  } else {
+    const cap = ms.panel(t(L('Vad händer', 'What happens')), [h('p.bf-cap')], { side: 'bottom' });
+    caption = cap.querySelector('.bf-cap');
+  }
   const captions: Text[] = [
     L('Vertices och index ligger i vanligt RAM – på ett separat grafikkort når GPU:n dem bara över PCIe-bussen.', 'Vertices and indices sit in ordinary RAM – on a discrete graphics card the GPU can only reach them over the PCIe bus.'),
     gl
       ? L('glCreateBuffers + glNamedBufferStorage: drivrutinen reserverar minne åt dig, oftast i VRAM.', 'glCreateBuffers + glNamedBufferStorage: the driver reserves memory for you, usually in VRAM.')
-      : L('Du reserverar själv en buffert i GPU-lokalt minne – med GPU:ns krav på storlek och alignment.', 'You reserve a buffer in GPU-local memory yourself – with the GPU\'s size and alignment requirements.'),
+      : L('Du reserverar själv en buffert i GPU-lokalt minne – med GPU:ns krav på storlek och alignment (streckat: det som faktiskt allokeras).', "You reserve a buffer in GPU-local memory yourself – with the GPU's size and alignment requirements (dashed: what is actually allocated)."),
     gl
       ? L('Drivrutinen kopierar dina bytes till en egen staging-yta innan anropet returnerar.', 'The driver copies your bytes into its own staging area before the call returns.')
-      : L('Map + memcpy: bytesen skrivs till en CPU-synlig staging-buffert.', 'Map + memcpy: the bytes are written into a CPU-visible staging buffer.'),
+      : L('Map + memcpy: bytesen skrivs till en CPU-synlig staging-buffert. Originalet finns kvar.', 'Map + memcpy: the bytes are written into a CPU-visible staging buffer. The original stays.'),
     gl
-      ? L('I bakgrunden flyttar en DMA-motor datan över PCIe till VRAM.', 'In the background a DMA engine moves the data across PCIe into VRAM.')
-      : L('En kopieringskommando (DMA) flyttar datan över PCIe in i VRAM.', 'A copy command (DMA) moves the data across PCIe into VRAM.'),
+      ? L('I bakgrunden flyttar en DMA-motor datan över PCIe till VRAM, där modellen byggs upp igen.', 'In the background a DMA engine moves the data across PCIe into VRAM, where the model is rebuilt.')
+      : L('Ett kopieringskommando (DMA) flyttar datan över PCIe in i VRAM, där modellen byggs upp igen.', 'A copy command (DMA) moves the data across PCIe into VRAM, where the model is rebuilt.'),
     gl
-      ? L('Drivrutinen ser till att kopian är klar innan första draw-anropet läser bufferten.', 'The driver makes sure the copy has finished before the first draw reads the buffer.')
-      : L('En barriär säger: kopian måste vara klar och synlig innan vertex-steget läser. Sedan kan staging-bufferten släppas.', 'A barrier says: the copy must be finished and visible before the vertex stage reads. Then the staging buffer can be freed.'),
+      ? L('Drivrutinen ser till att kopian är klar innan första draw-anropet läser bufferten – grinden öppnas av sig själv.', 'The driver makes sure the copy has finished before the first draw reads the buffer – the gate opens by itself.')
+      : L('En barriär öppnar grinden: kopian är klar och synlig för vertex-steget. Sedan kan staging-bufferten släppas.', 'A barrier opens the gate: the copy is finished and visible to the vertex stage. Then the staging buffer can be freed.'),
   ];
+  const CUR_DETAIL = [0, 2, 0, 1, 2];
+
+  /* ---- animation ---- */
+  let step = -1;
+  const timers: gsap.core.Tween[] = [];
+  const later = (animate: boolean, s: number, fn: () => void) => {
+    if (!animate) fn();
+    else timers.push(gsap.delayedCall(dur(s), fn));
+  };
+  const vOpacity = (o: number, s: number) => {
+    vSolid.visible = true;
+    if (s <= 0) vMat.uniforms.uOpacity.value = o;
+    else ms.tween(vMat.uniforms.uOpacity, { value: o, duration: dur(s) });
+  };
+  ms.onFrame((time) => {
+    if (concept) {
+      ms.pivot.rotation.y = SHOWCASE_ROT_Y + Math.sin(time * 0.4) * 0.35;
+      vModel.rotation.y = ms.pivot.rotation.y;
+    }
+    laneMat.opacity = step === 3 ? 0.45 + 0.25 * Math.sin(time * 6) : 0.16;
+    vSolid.visible = vMat.uniforms.uOpacity.value > 0.01;
+  });
+  const prog = (memcpy.points.material as ShaderMaterial).uniforms.uProgress;
 
   return {
-    show(st, animate) {
-      step = st;
-      pkts.length = 0;
-      const snap = !animate || still;
-      fill.alloc = step >= 1 ? 1 : 0;
-      fill.ready = step >= 4 ? 1 : 0;
-      fill.stg = step >= 3 || (step === 2 && snap) ? 1 : 0;
-      fill.buf = step >= 4 || (step === 3 && snap) ? 1 : 0;
-      if (animate && step === 1) gsap.fromTo(fill, { alloc: 0 }, { alloc: 1, duration: dur(0.8) });
-      caption.innerHTML = t(captions[step]);
-      if (animate) gsap.fromTo(caption, { opacity: 0, y: 8 }, { opacity: 1, y: 0, duration: dur(0.4) });
+    show(stp, animate) {
+      step = stp;
+      const S = (s: number) => secs(animate, s);
+      timers.splice(0).forEach((x) => x.kill());
+      gsap.killTweensOf([...Object.values(u), ...Object.values(ms.layers).map((x) => x.material), vMat.uniforms.uOpacity, vMat.uniforms.uMode, vMat.uniforms.uModeMix, vWireMat, prog, busMat.uniforms.uProgress, allocState, gateState, ...details]);
+      u.uSweep.value = 100;
+      vMat.uniforms.uSweep.value = 100;
+
+      // Panels
+      keyRow.replaceChildren(...keyStats[step]);
+      if (caption) caption.innerHTML = t(captions[step]);
+      details.forEach((el, i) => {
+        el.classList.toggle('collapsed', i !== CUR_DETAIL[step]);
+        el.classList.toggle('cur', i === CUR_DETAIL[step]);
+      });
+      if (stagingEl) stagingEl.classList.toggle('off', step < 2);
+      fills.forEach((f) => (f.style.transform = `scaleX(${step >= 3 ? 1 : 0})`));
+      stateEls.forEach((e) => e.classList.toggle('off', step < 4));
+      if (animate) gsap.fromTo(keyPanel, { opacity: 0.3 }, { opacity: 1, duration: dur(0.4) });
+
+      // Box highlights
+      edgeMat(ramBox).opacity = step === 0 || step === 2 ? 1 : 0.45;
+      edgeMat(vramBox).opacity = step === 1 || step >= 3 ? 1 : 0.4;
+      stgBox.visible = step >= 2;
+      edgeMat(stgBox).opacity = step === 4 ? 0.25 : 1;
+      lanes.visible = true;
+      laneLbl.visible = step >= 3;
+
+      // The app's copy in RAM stays (memcpy copies); it dims once the GPU has its own.
+      ms.setLayer('solid', step >= 3 ? 0.55 : 1, S(0.5));
+      ms.setLayer('wire', step === 2 ? 0.3 : 0.12, S(0.5));
+      if (step >= 3) ms.setMode('ghost', 0.6, S(0.5));
+      else ms.setMode('shaded', 0, S(0.5));
+
+      // Allocation (step ≥ 1)
+      if (animate && step === 1) {
+        allocState.k = 0;
+        ms.tween(allocState, { k: 1, duration: dur(0.9), ease: 'back.out(1.6)', onUpdate: applyAlloc });
+      } else allocState.k = step >= 1 ? 1 : 0;
+      applyAlloc();
+
+      // Gate: closed during the copy, open after the barrier.
+      gate.visible = step >= 3;
+      if (animate && step === 4) {
+        gateState.open = 0;
+        ms.tween(gateState, { open: 1, duration: dur(1.2), delay: dur(0.3), ease: 'power2.inOut', onUpdate: applyGate });
+      } else gateState.open = step >= 4 ? 1 : 0;
+      applyGate();
+
+      // Streams
+      memcpy.points.visible = step === 2;
+      bus.visible = step === 3;
+      memcpy.setTargets(inWorld(ms.pivot), lattice);
+      busGeo.attributes.aTo.array.set(inWorld(vModel));
+      busGeo.attributes.aTo.needsUpdate = true;
+      vWireMat.opacity = 0;
+      if (step < 3) vOpacity(0, 0);
+      if (step === 2) {
+        memcpy.progress(0, 0);
+        memcpy.progress(1, S(2.2));
+      } else if (step === 3) {
+        busMat.uniforms.uProgress.value = 0;
+        vMat.uniforms.uMode.value = VIEW_MODE.ghost;
+        vMat.uniforms.uModeMix.value = 1;
+        vOpacity(0, 0);
+        if (animate) ms.tween(busMat.uniforms.uProgress, { value: 1, duration: dur(3.2), ease: 'none' });
+        else busMat.uniforms.uProgress.value = 1;
+        later(animate, 2.6, () => {
+          vOpacity(1, S(0.8));
+          ms.tween(vWireMat, { opacity: 0.35, duration: dur(0.8) });
+        });
+        later(animate, 3.7, () => (bus.visible = false));
+      } else if (step === 4) {
+        // Visible to the vertex stage: the VRAM copy lights up.
+        vMat.uniforms.uMode.value = VIEW_MODE.ghost;
+        vMat.uniforms.uModeMix.value = 1;
+        vOpacity(1, 0);
+        vWireMat.opacity = 0.2;
+        later(animate, 1.0, () => {
+          if (animate) ms.tween(vMat.uniforms.uModeMix, { value: 0, duration: dur(0.9) });
+          else vMat.uniforms.uModeMix.value = 0;
+          if (animate) ms.tween(vWireMat, { opacity: 0.05, duration: dur(0.9) });
+          else vWireMat.opacity = 0.05;
+        });
+      }
     },
     destroy() {
-      cancelAnimationFrame(raf);
-      ro.disconnect();
-      gsap.killTweensOf([fill, caption]);
+      timers.forEach((x) => x.kill());
+      gsap.killTweensOf(keyPanel);
+      vMat.dispose();
+      ms.destroy();
     },
   };
 }
@@ -617,6 +685,6 @@ export default standardSlide({
     L('<b>Barriär</b>: kopian måste vara klar och synlig innan vertex-steget läser. Explicit i Vulkan/D3D12, implicit i OpenGL.', '<b>Barrier</b>: the copy must be finished and visible before the vertex stage reads. Explicit in Vulkan/D3D12, implicit in OpenGL.'),
   ],
   api: apis,
-  data: dataVisual,
-  concept: conceptVisual,
+  data: (host, ctx) => uploadVisual(host, ctx, false),
+  concept: (host, ctx) => uploadVisual(host, ctx, true),
 });

@@ -1,15 +1,33 @@
 import gsap from 'gsap';
-import { dur, h, reducedMotion, s } from '../core/dom';
+import {
+  AdditiveBlending,
+  BoxGeometry,
+  BufferAttribute,
+  BufferGeometry,
+  Color,
+  Group,
+  LineBasicMaterial,
+  LineSegments,
+  Mesh,
+  MeshBasicMaterial,
+  Points,
+  PointsMaterial,
+  QuadraticBezierCurve3,
+  Vector3,
+  type ShaderMaterial,
+} from 'three';
+import { dur, h } from '../core/dom';
 import { L, type Text } from '../core/i18n';
 import type { ApiId } from '../core/state';
-import type { VertexAttribute, VertexLayout } from '../pipeline/layout';
-import { memoryView } from '../views/widgets';
+import { formatBytes, type VertexAttribute, type VertexLayout } from '../pipeline/layout';
+import { createModelStage, glowTexture, secs, type ModelStage } from '../views/ModelStage';
+import { COLORS, label } from '../views/three-helpers';
+import { stat } from '../views/widgets';
 import { standardSlide } from './standard';
 import type { ApiPanelSpec, CodeSnippet, SlideContext, Visual } from './types';
 import '../styles/slides/input-layout.css';
 
 const CLS = { position: 'pos', normal: 'nrm', uv: 'uv' } as const;
-const HEX = { position: '#38e1ff', normal: '#ff3fd2', uv: '#ffb547' } as const;
 const GLSL_NAME = { position: 'aPosition', normal: 'aNormal', uv: 'aUV' } as const;
 const HLSL_NAME = { position: 'position', normal: 'normal  ', uv: 'uv      ' } as const;
 const GLSL_TYPE = (a: VertexAttribute) => (a.components === 2 ? 'vec2' : 'vec3');
@@ -22,11 +40,6 @@ function shaderDecl(api: ApiId, a: VertexAttribute): string {
   return `layout(location = ${a.location}) in ${GLSL_TYPE(a)} ${GLSL_NAME[a.name]};`;
 }
 
-/** How the attribute is identified in this API. */
-function slotName(api: ApiId, a: VertexAttribute): string {
-  return api === 'd3d12' ? `${a.semantic} · index 0` : `location ${a.location}`;
-}
-
 function attrValues(ctx: SlideContext, a: VertexAttribute, v: number): number[] {
   const m = ctx.state.mesh;
   const src = a.name === 'position' ? m.positions : a.name === 'normal' ? m.normals : m.uvs!;
@@ -35,373 +48,324 @@ function attrValues(ctx: SlideContext, a: VertexAttribute, v: number): number[] 
 const fmtVals = (vals: number[]) => `(${vals.map((x) => (Math.abs(x) < 5e-5 ? 0 : x).toFixed(3)).join(', ')})`;
 
 /* ------------------------------------------------------------------ */
-/* Real data: the buffer's bytes wired into the vertex shader inputs   */
-/* ------------------------------------------------------------------ */
-function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
-  const { t } = ctx;
-  const api = ctx.state.api;
-  const l = ctx.derived.layout;
-  const rows = Math.min(3, ctx.state.mesh.vertexCount);
-  const mem = memoryView(l, rows);
-  mem.el.classList.add('il-mem');
-
-  // Braces above vertex 0: one per attribute.
-  const braces = h('div.il-braces');
-  const strideTag = h('div.il-stride', {}, [h('b', { text: `stride = ${l.stride} B` }), h('span', { text: ` · binding 0 · ${api === 'd3d12' ? 'PER_VERTEX_DATA' : api === 'vulkan' ? 'VK_VERTEX_INPUT_RATE_VERTEX' : 'divisor 0'}` })]);
-  const bufHead = h('div.il-buf-head', {}, [
-    h('span.il-k', { text: t(L('vertexbuffert', 'vertex buffer')) }),
-    h('span.il-raw-note', { text: t(L('– bara bytes, ingen betydelse än', '– just bytes, no meaning yet')) }),
-  ]);
-  bufHead.append(strideTag);
-  const memWrap = h('div.il-memwrap', {}, [braces, mem.el]);
-
-  // Shader input "sockets".
-  const sockets = l.attributes.map((a) => {
-    const decl = h('div.il-decl.mono', { text: shaderDecl(api, a) });
-    const vals = h('div.il-vals.mono', { text: `= ${fmtVals(attrValues(ctx, a, 0))}` });
-    const el = h(`div.il-socket.${CLS[a.name]}`, {}, [
-      h('div.il-sock-head', {}, [h('span.il-plug'), h('b', { text: slotName(api, a) }), h('span.il-off.mono', { text: `+${a.offset}` })]),
-      h('div.il-fmt.mono', { text: a.formats[api] }),
-      h('div.il-sub', { text: `offset ${a.offset} B · ${a.components * 4} B` }),
-      decl,
-      vals,
-    ]);
-    return { el, decl, vals };
-  });
-  const shaderBox = h('div.il-shader', {}, [
-    h('div.il-shader-title', { text: t(api === 'd3d12' ? L('Vertex shader (HLSL) · indata', 'Vertex shader (HLSL) · inputs') : L('Vertex shader (GLSL) · indata', 'Vertex shader (GLSL) · inputs')) }),
-    h('div.il-sockets', { style: { gridTemplateColumns: `repeat(${sockets.length}, minmax(0, 1fr))` } }, sockets.map((x) => x.el)),
-  ]);
-
-  const svg = s('svg', { class: 'il-wires' });
-  const root = h('div.il-root', {}, [bufHead, memWrap, shaderBox, svg]);
-  host.append(root);
-
-  const row0 = mem.rows[0];
-  const cellsOf = (r: HTMLElement) => Array.from(r.querySelectorAll<HTMLElement>('.mem-cell'));
-  const braceEls = l.attributes.map((a) => {
-    const b = h(`div.il-brace.${CLS[a.name]}`, {}, [h('span', { text: `${a.name} · +${a.offset}` })]);
-    braces.append(b);
-    return b;
-  });
-  const wires: { path: SVGPathElement; glow: SVGPathElement; dots: SVGCircleElement[] }[] = [];
-  let step = 0;
-
-  const rel = (el: Element) => {
-    const r = el.getBoundingClientRect();
-    const o = root.getBoundingClientRect();
-    return { x: r.left - o.left, y: r.top - o.top, w: r.width, h: r.height };
-  };
-
-  const layoutWires = () => {
-    const cells = cellsOf(row0);
-    const W = root.clientWidth;
-    const H = root.clientHeight;
-    svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
-    svg.replaceChildren();
-    wires.length = 0;
-    // braces
-    l.attributes.forEach((a, i) => {
-      const c0 = rel(cells[a.offset]);
-      const c1 = rel(cells[a.offset + a.components * 4 - 1]);
-      const m0 = rel(memWrap);
-      Object.assign(braceEls[i].style, { left: `${c0.x - m0.x}px`, width: `${c1.x + c1.w - c0.x}px` });
-    });
-    // wires leave from under the last row, below each attribute's columns
-    const lastCells = cellsOf(mem.rows[mem.rows.length - 1]);
-    l.attributes.forEach((a, i) => {
-      const c0 = rel(lastCells[a.offset]);
-      const c1 = rel(lastCells[a.offset + a.components * 4 - 1]);
-      const sx = (c0.x + c1.x + c1.w) / 2;
-      const sy = c0.y + c0.h + 2;
-      const sock = rel(sockets[i].el);
-      const ex = sock.x + 22;
-      const ey = sock.y + 2;
-      const my = (sy + ey) / 2;
-      const d = `M${sx},${sy} C${sx},${my} ${ex},${my} ${ex},${ey}`;
-      const glow = s('path', { d, class: 'il-wire-glow' });
-      const path = s('path', { d, class: 'il-wire' });
-      glow.style.stroke = HEX[a.name];
-      path.style.stroke = HEX[a.name];
-      const dots = [0, 1, 2].map(() => {
-        const c = s('circle', { r: 3, class: 'il-dot' });
-        c.style.fill = HEX[a.name];
-        c.style.color = HEX[a.name];
-        return c;
-      });
-      svg.append(glow, path, ...dots);
-      wires.push({ path, glow, dots });
-    });
-    applyWires(false);
-  };
-
-  let raf = 0;
-  const t0 = performance.now();
-  const tick = () => {
-    const time = (performance.now() - t0) / 1000;
-    if (step >= 3 && !reducedMotion()) {
-      for (const w of wires) {
-        const len = w.path.getTotalLength();
-        w.dots.forEach((c, k) => {
-          const p = w.path.getPointAtLength(((time * 0.6 + k / 3) % 1) * len);
-          c.setAttribute('cx', String(p.x));
-          c.setAttribute('cy', String(p.y));
-        });
-      }
-    }
-    raf = requestAnimationFrame(tick);
-  };
-
-  const applyWires = (animate: boolean) => {
-    for (const w of wires) {
-      const len = w.path.getTotalLength();
-      const on = step >= 3;
-      w.path.style.strokeDasharray = `${len}`;
-      w.glow.style.strokeDasharray = `${len}`;
-      w.dots.forEach((c) => (c.style.display = on && !reducedMotion() ? '' : 'none'));
-      if (animate && on) {
-        gsap.fromTo([w.path, w.glow], { strokeDashoffset: len }, { strokeDashoffset: 0, duration: dur(0.9), ease: 'power2.inOut' });
-      } else {
-        gsap.set([w.path, w.glow], { strokeDashoffset: on ? 0 : len });
-      }
-    }
-  };
-
-  const ro = new ResizeObserver(() => layoutWires());
-  ro.observe(root);
-  raf = requestAnimationFrame(tick);
-
-  return {
-    show(st, animate) {
-      step = st;
-      mem.el.classList.toggle('raw', step < 2);
-      bufHead.classList.toggle('raw', step < 2);
-      mem.rows.forEach((r, i) => r.classList.toggle('il-row-on', step >= 1 && i === 0));
-      strideTag.classList.toggle('on', step >= 1);
-      braces.classList.toggle('on', step >= 2);
-      shaderBox.classList.toggle('on', step >= 2);
-      shaderBox.classList.toggle('bound', step >= 3);
-      sockets.forEach((x) => {
-        x.decl.classList.toggle('on', step >= 3);
-        x.vals.classList.toggle('on', step >= 3);
-      });
-      layoutWires();
-      applyWires(animate);
-      if (!animate) return;
-      if (step === 1) gsap.fromTo(strideTag, { opacity: 0, x: -10 }, { opacity: 1, x: 0, duration: dur(0.4) });
-      if (step === 2) {
-        gsap.fromTo(braceEls, { opacity: 0, y: 6 }, { opacity: 1, y: 0, stagger: 0.12, duration: dur(0.35) });
-        gsap.fromTo(sockets.map((x) => x.el), { opacity: 0 }, { opacity: 1, stagger: 0.12, duration: dur(0.4) });
-        gsap.fromTo(cellsOf(row0), { opacity: 0.3 }, { opacity: 1, stagger: 0.012, duration: dur(0.2) });
-      }
-      if (step === 3) gsap.fromTo(sockets.map((x) => x.decl), { opacity: 0 }, { opacity: 1, stagger: 0.15, duration: dur(0.4), delay: dur(0.5) });
-    },
-    destroy() {
-      cancelAnimationFrame(raf);
-      ro.disconnect();
-      gsap.killTweensOf([strideTag, ...braceEls, ...sockets.map((x) => x.el), ...sockets.map((x) => x.decl)]);
-    },
+/* Both modes: attributes are plugged in one by one and appear on the  */
+/* model – positions as points, normals as the hedgehog, UVs as colour */
+/** Pull the camera back on narrow views so `halfWidth` world units (around the origin) stay in frame. */
+function fitWidth(ms: ModelStage, halfWidth: number): void {
+  const base = ms.camera.position.length();
+  const prev = ms.view.onResize;
+  ms.view.onResize = (w, hh) => {
+    prev?.(w, hh);
+    const tanH = Math.tan((ms.camera.fov * Math.PI) / 360);
+    const need = halfWidth / (tanH * Math.max(0.3, w / hh)) + 0.6;
+    ms.camera.position.setLength(Math.max(base, Math.min(12, need)));
   };
 }
 
 /* ------------------------------------------------------------------ */
-/* Concept: cables plug buffer columns into shader input sockets       */
-/* ------------------------------------------------------------------ */
-function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
+const HEXN = { position: COLORS.cyan, normal: COLORS.magenta, uv: COLORS.amber } as const;
+
+function inputVisual(host: HTMLElement, ctx: SlideContext, concept: boolean): Visual {
   const { t } = ctx;
   const api = ctx.state.api;
+  const m = ctx.state.mesh;
   const l = ctx.derived.layout;
-  const VW = 940;
-  const VH = 322;
-  const N = Math.min(7, ctx.state.mesh.vertexCount);
-  const TX = 40;
-  const TW = 380;
-  const TY = 62;
-  const RH = 34;
-  const u = TW / l.stride;
-  const svg = s('svg', { class: 'il-concept', viewBox: `0 0 ${VW} ${VH}`, preserveAspectRatio: 'xMidYMid meet' });
-  const defs = s('defs', {}, [
-    s('filter', { id: 'il-glow', x: '-50%', y: '-50%', width: '200%', height: '200%' }, [
-      s('feGaussianBlur', { stdDeviation: 4, result: 'b' }),
-      s('feMerge', {}, [s('feMergeNode', { in: 'b' }), s('feMergeNode', { in: 'SourceGraphic' })]),
-    ]),
-  ]);
-  svg.append(defs);
-  const caption = h('div.il-caption');
-  host.append(svg, caption);
+  const A = l.attributes;
+  const ms = createModelStage(host, ctx, {
+    shift: concept ? 0 : -0.17,
+    eye: [0, 1.0, 4.6],
+    autoRotate: 0,
+    bloom: 0.55,
+    bloomThreshold: 0.84,
+    layers: { solid: 0, wire: 0, points: 0, normals: 0 },
+  });
+  ms.overlay.classList.add('il-ms');
+  fitWidth(ms, 1.6);
+  const u = ms.material.uniforms;
+  const v = new Vector3();
 
-  // --- the buffer: N rows (vertices) × stride bytes ---
-  const tableG = s('g');
-  svg.append(tableG);
-  tableG.append(s('text', { x: TX, y: TY - 34, class: 'il-c-title' }, [t(L('VERTEXBUFFERT', 'VERTEX BUFFER'))]));
-  const colHeads: SVGGElement[] = [];
-  const cellRects: { r: SVGRectElement; a: VertexAttribute }[] = [];
-  for (let v = 0; v < N; v++) {
-    tableG.append(s('text', { x: TX - 10, y: TY + v * RH + RH / 2 + 4, 'text-anchor': 'end', class: 'il-c-idx' }, [String(v)]));
-    for (const a of l.attributes) {
-      const r = s('rect', { x: TX + a.offset * u + 2, y: TY + v * RH + 3, width: a.components * 4 * u - 4, height: RH - 6, rx: 6, class: 'il-c-cell' });
-      tableG.append(r);
-      cellRects.push({ r, a });
-      // byte ticks inside the cell
-      for (let b = 1; b < a.components * 4; b++) {
-        tableG.append(s('line', { x1: TX + (a.offset + b) * u, x2: TX + (a.offset + b) * u, y1: TY + v * RH + 10, y2: TY + v * RH + RH - 10, class: 'il-c-tick' }));
-      }
+  /* ---- the followed vertex ---- */
+  const showcase = ctx.derived.triangleVertices(ctx.derived.showcaseTriangle(api))[0];
+  const tour = Array.from({ length: Math.min(12, m.vertexCount) }, (_, i) => (showcase + Math.floor((i * m.vertexCount) / Math.min(12, m.vertexCount))) % m.vertexCount);
+  let vi = showcase;
+
+  /* ---- the vertex buffer as a strip of bytes under the model ---- */
+  const RIB_Y = -1.32;
+  const RIB_W = 2.7;
+  const cw = RIB_W / l.stride;
+  const cellGeo = new BoxGeometry(cw * 0.84, 0.15, 0.05);
+  const gray = new Color(0x3a4166);
+  const attrOf = (byte: number) => [...A].reverse().find((a) => a.offset <= byte)!;
+  const ribbon = new Group();
+  ribbon.position.set(0, RIB_Y, 0.35);
+  const cells = Array.from({ length: l.stride }, (_, b) => {
+    const mat = new MeshBasicMaterial({ color: gray.clone(), transparent: true, opacity: 0.9 });
+    const c = new Mesh(cellGeo, mat);
+    c.position.x = -RIB_W / 2 + (b + 0.5) * cw;
+    ribbon.add(c);
+    return { mat, attr: attrOf(b) };
+  });
+  // Faded neighbours on both sides: the next and previous vertex.
+  for (let k = 1; k <= 6; k++) {
+    for (const sgn of [-1, 1]) {
+      const g = new Mesh(cellGeo, new MeshBasicMaterial({ color: gray, transparent: true, opacity: 0.3 * (1 - k / 7) }));
+      g.position.x = sgn * (RIB_W / 2 + (k - 0.5) * cw);
+      ribbon.add(g);
     }
   }
-  l.attributes.forEach((a) => {
-    const g = s('g', { class: 'il-c-head' }, [
-      s('text', { x: TX + (a.offset + a.components * 2) * u, y: TY - 18, 'text-anchor': 'middle', fill: HEX[a.name] }, [a.name]),
-      s('text', { x: TX + (a.offset + a.components * 2) * u, y: TY - 5, 'text-anchor': 'middle', class: 'il-c-sub' }, [`+${a.offset} · ${a.components}×f32`]),
-    ]);
-    tableG.append(g);
-    colHeads.push(g);
+  // Stride bracket.
+  const bracketGeo = new BufferGeometry();
+  const bw = RIB_W / 2;
+  bracketGeo.setAttribute('position', new BufferAttribute(new Float32Array([-bw, 0.12, 0, -bw, 0.2, 0, -bw, 0.2, 0, bw, 0.2, 0, bw, 0.2, 0, bw, 0.12, 0]), 3));
+  const bracketMat = new LineBasicMaterial({ color: COLORS.violet, transparent: true, opacity: 0 });
+  ribbon.add(new LineSegments(bracketGeo, bracketMat));
+  const rate = api === 'd3d12' ? 'PER_VERTEX_DATA' : api === 'vulkan' ? 'INPUT_RATE_VERTEX' : 'divisor 0';
+  const strideLbl = label(`stride = ${l.stride} B · binding 0 · ${rate}`, 'big');
+  strideLbl.position.set(0, 0.36, 0);
+  const rawLbl = label(t(L(`vertexbuffert · ${formatBytes(l.vertexBytes)} – bara bytes`, `vertex buffer · ${formatBytes(l.vertexBytes)} – just bytes`)), '');
+  rawLbl.position.set(0, -0.24, 0);
+  ribbon.add(strideLbl, rawLbl);
+  const attrLbls = A.map((a) => {
+    const lb = label(`${a.name} +${a.offset}`, a.name === 'position' ? 'cyan' : a.name === 'normal' ? 'magenta' : 'amber');
+    lb.position.set(-RIB_W / 2 + (a.offset + a.components * 2) * cw, -0.24, 0);
+    ribbon.add(lb);
+    return lb;
   });
-  // read head (one vertex = one stride)
-  const head = s('rect', { x: TX - 4, y: TY, width: TW + 8, height: RH, rx: 8, class: 'il-c-head-rect' });
-  const strideLbl = s('text', { x: TX + TW + 14, y: TY + RH / 2 + 4, class: 'il-c-stride' }, [`stride ${l.stride} B ↓`]);
-  svg.append(head, strideLbl);
+  ms.scene.add(ribbon);
+  const colX = (a: VertexAttribute) => -RIB_W / 2 + (a.offset + a.components * 2) * cw;
 
-  // --- the vertex shader chip with one socket per attribute ---
-  const CX = 640;
-  const CY = 24;
-  const CWd = 260;
-  const CHt = 288;
-  const chip = s('rect', { x: CX, y: CY, width: CWd, height: CHt, rx: 18, class: 'il-c-chip' });
-  const chipTitle = s('text', { x: CX + CWd / 2, y: CY + 30, 'text-anchor': 'middle', class: 'il-c-chip-title' }, ['VERTEX SHADER']);
-  const counter = s('text', { x: CX + CWd / 2, y: CY + 50, 'text-anchor': 'middle', class: 'il-c-counter' }, ['']);
-  svg.append(chip, chipTitle, counter);
-  const sockY = (i: number) => CY + 92 + i * ((CHt - 140) / Math.max(1, l.attributes.length - 1));
-  const sockets = l.attributes.map((a, i) => {
-    const y = l.attributes.length === 1 ? CY + CHt / 2 : sockY(i);
-    const ring = s('circle', { cx: CX, cy: y, r: 11, class: 'il-c-sock' });
-    ring.style.stroke = HEX[a.name];
-    const core = s('circle', { cx: CX, cy: y, r: 5, class: 'il-c-core' });
-    core.style.fill = HEX[a.name];
-    const name = s('text', { x: CX + 22, y: y - 4, class: 'il-c-sname' }, [slotName(api, a)]);
-    const decl = s('text', { x: CX + 22, y: y + 12, class: 'il-c-decl' }, [api === 'd3d12' ? `${HLSL_TYPE(a)} : ${hlslSemantic(a)}` : `in ${GLSL_TYPE(a)} ${GLSL_NAME[a.name]}`]);
-    const val = s('text', { x: CX + 22, y: y + 27, class: 'il-c-val' }, ['']);
-    svg.append(ring, core, name, decl, val);
-    return { y, ring, core, name, decl, val, a };
+  /* ---- step 0/1: the same bytes read without / with the right stride ---- */
+  const NP = Math.min(2500, m.vertexCount);
+  const floats = new Float32Array(l.vertexBuffer);
+  const garbage = new Float32Array(NP * 3);
+  const correct = new Float32Array(NP * 3);
+  for (let i = 0; i < NP; i++) {
+    const k = Math.floor((i * m.vertexCount) / NP);
+    // Read as if the buffer were tightly packed float3 (stride 12): positions, normals and UVs get mixed up.
+    for (let c = 0; c < 3; c++) {
+      const f = floats[(k * 3 + c) % floats.length];
+      garbage[i * 3 + c] = Number.isFinite(f) ? Math.max(-1.3, Math.min(1.3, f)) : 0;
+    }
+    correct.set(m.positions.subarray(k * 3, k * 3 + 3), i * 3);
+  }
+  const cloud = ms.particles(NP, 0x9aa3c7, 0.026, 'model');
+  cloud.setTargets(garbage, correct);
+  const cloudMat = cloud.points.material as ShaderMaterial;
+  cloudMat.uniforms.uArc.value = 0.12;
+  cloudMat.uniforms.uColor2.value.set(0xd6dcff);
+
+  /* ---- connectors: buffer column → the followed vertex ---- */
+  const SEG = 48;
+  const conns = A.map((a) => {
+    const geo = new BufferGeometry();
+    geo.setAttribute('position', new BufferAttribute(new Float32Array(SEG * 3), 3));
+    const cable = new Points(geo, new PointsMaterial({ color: HEXN[a.name], size: 0.05, map: glowTexture(), transparent: true, opacity: 0.85, blending: AdditiveBlending, depthWrite: false }));
+    const pg = new BufferGeometry();
+    pg.setAttribute('position', new BufferAttribute(new Float32Array(9), 3));
+    const pulses = new Points(pg, new PointsMaterial({ color: 0xffffff, size: 0.11, map: glowTexture(), transparent: true, opacity: 0.95, blending: AdditiveBlending, depthWrite: false }));
+    cable.frustumCulled = pulses.frustumCulled = false;
+    ms.scene.add(cable, pulses);
+    const tip = label(api === 'd3d12' ? `: ${hlslSemantic(a)}` : `location ${a.location}`, a.name === 'position' ? 'cyan' : a.name === 'normal' ? 'magenta' : 'amber');
+    ms.scene.add(tip);
+    return { a, cable, pulses, tip, k: { v: 0 }, curve: new QuadraticBezierCurve3() };
   });
-  // cables (paths updated every frame as the head moves)
-  const cables = l.attributes.map((a) => {
-    const glow = s('path', { class: 'il-c-cable-glow' });
-    const p = s('path', { class: 'il-c-cable' });
-    glow.style.stroke = HEX[a.name];
-    p.style.stroke = HEX[a.name];
-    const plug = s('circle', { r: 6, class: 'il-c-plug' });
-    plug.style.fill = HEX[a.name];
-    const pulses = [0, 1].map(() => {
-      const c = s('circle', { r: 4, class: 'il-c-pulse' });
-      c.style.fill = '#fff';
-      c.style.filter = `drop-shadow(0 0 6px ${HEX[a.name]})`;
-      return c;
+  const endPoint = (a: VertexAttribute, out: Vector3) => {
+    const p = new Vector3(...ctx.derived.position(vi));
+    const n = new Vector3(...ctx.derived.normal(vi));
+    if (a.name === 'normal') p.addScaledVector(n, 0.22);
+    else if (a.name === 'uv') p.addScaledVector(n, 0.06);
+    return out.copy(p).applyMatrix4(ms.pivot.matrixWorld);
+  };
+  const updateConns = (time: number, flowing: boolean) => {
+    ms.pivot.updateMatrixWorld(true);
+    ribbon.updateMatrixWorld(true);
+    conns.forEach((cn, i) => {
+      const start = new Vector3(colX(cn.a), 0.12, 0).applyMatrix4(ribbon.matrixWorld);
+      const end = endPoint(cn.a, new Vector3());
+      const mid = start.clone().lerp(end, 0.5);
+      mid.x += (i - 1) * 0.35 - 0.25;
+      mid.z += 0.45;
+      cn.curve.v0.copy(start);
+      cn.curve.v1.copy(mid);
+      cn.curve.v2.copy(end);
+      const arr = cn.cable.geometry.attributes.position.array as Float32Array;
+      for (let s = 0; s < SEG; s++) cn.curve.getPoint(s / (SEG - 1), v).toArray(arr, s * 3);
+      cn.cable.geometry.attributes.position.needsUpdate = true;
+      const shown = Math.round(cn.k.v * SEG);
+      cn.cable.geometry.setDrawRange(0, shown);
+      cn.cable.visible = shown > 0;
+      cn.curve.getPoint(0.62, cn.tip.position);
+      cn.tip.visible = cn.k.v > 0.98 && step >= 3;
+      cn.pulses.visible = flowing && cn.k.v > 0.98;
+      if (cn.pulses.visible) {
+        const pa = cn.pulses.geometry.attributes.position.array as Float32Array;
+        for (let j = 0; j < 3; j++) cn.curve.getPoint((time * 0.55 + j / 3 + i * 0.13) % 1, v).toArray(pa, j * 3);
+        cn.pulses.geometry.attributes.position.needsUpdate = true;
+      }
     });
-    svg.insertBefore(glow, head);
-    svg.insertBefore(p, head);
-    svg.append(plug, ...pulses);
-    return { glow, p, plug, pulses, a };
-  });
-
-  let step = 0;
-  const st = { row: 0, reach: 0, color: 0 };
-  let raf = 0;
-  const t0 = performance.now();
-  let last = t0;
-  let rowClock = 0;
-  const still = reducedMotion();
-
-  const update = (time: number) => {
-    const rowY = TY + st.row * RH;
-    head.setAttribute('y', String(rowY));
-    strideLbl.setAttribute('y', String(rowY + RH / 2 + 4));
-    const vi = Math.round(st.row) % N;
-    cellRects.forEach(({ r, a }) => {
-      r.style.fill = st.color > 0 ? `color-mix(in srgb, ${HEX[a.name]} ${Math.round(st.color * 26)}%, rgba(255,255,255,0.05))` : '';
-      r.style.stroke = st.color > 0 ? HEX[a.name] : '';
-      r.style.strokeOpacity = String(0.25 + st.color * 0.55);
-    });
-    cables.forEach((c, i) => {
-      const s0 = sockets[i];
-      const sx = TX + (c.a.offset + c.a.components * 2) * u;
-      const sy = rowY + RH / 2;
-      const ex = CX - 12;
-      const ey = s0.y;
-      // grow the cable from the cell toward the socket
-      const k = st.reach;
-      const x2 = sx + (ex - sx) * k;
-      const y2 = sy + (ey - sy) * k;
-      const d = `M${sx},${sy} C${sx + 140 * k},${sy} ${x2 - 120 * k},${y2} ${x2},${y2}`;
-      c.p.setAttribute('d', d);
-      c.glow.setAttribute('d', d);
-      c.plug.setAttribute('cx', String(x2));
-      c.plug.setAttribute('cy', String(y2));
-      c.plug.style.opacity = k > 0.02 ? '1' : '0';
-      c.p.style.opacity = c.glow.style.opacity = k > 0.02 ? '1' : '0';
-      const flowing = step >= 3 && k > 0.98;
-      c.pulses.forEach((p, j) => {
-        p.style.display = flowing && !still ? '' : 'none';
-        if (!flowing || still) return;
-        const len = c.p.getTotalLength();
-        const pt = c.p.getPointAtLength(((time * 0.9 + j * 0.5) % 1) * len);
-        p.setAttribute('cx', String(pt.x));
-        p.setAttribute('cy', String(pt.y));
-      });
-      s0.ring.classList.toggle('on', k > 0.98);
-      s0.val.textContent = step >= 3 ? `= ${fmtVals(attrValues(ctx, c.a, vi))}` : '';
-    });
-    counter.textContent = step >= 3 ? `${api === 'd3d12' ? 'SV_VertexID' : api === 'vulkan' ? 'gl_VertexIndex' : 'gl_VertexID'} = ${vi}` : '';
   };
 
-  const frame = (now: number) => {
-    const dt = Math.min(0.05, (now - last) / 1000);
-    last = now;
-    if (step >= 1 && !still) {
-      rowClock += dt;
-      const period = step >= 3 ? 1.1 : 0.8;
-      const idx = Math.floor(rowClock / period) % N;
-      const k = Math.min(1, (rowClock % period) / (period * 0.3));
-      const e = k * k * (3 - 2 * k);
-      st.row = idx === 0 ? 0 : idx - 1 + e;
-    } else if (step < 1) st.row = 0;
-    update((now - t0) / 1000);
-    raf = requestAnimationFrame(frame);
-  };
-  raf = requestAnimationFrame(frame);
-
+  /* ---- panels ---- */
+  const slot = (a: VertexAttribute) => (api === 'd3d12' ? `${hlslSemantic(a)}` : `location ${a.location}`);
+  const keyStats: HTMLElement[][] = [
+    [stat(formatBytes(l.vertexBytes), t(L('bara bytes', 'just bytes')), 'glow-amber'), stat(m.vertexCount.toLocaleString('en-US'), 'vertices')],
+    [stat(`${l.stride} B`, 'stride', 'glow-cyan'), stat(api === 'd3d12' ? 'PER_VERTEX' : 'VERTEX', 'input rate')],
+    [stat(String(A.length), t(L('attribut', 'attributes')), 'glow-magenta'), stat(A.map((a) => `+${a.offset}`).join(' '), 'offsets')],
+    [stat(m.vertexCount.toLocaleString('en-US'), t(L('shaderanrop', 'shader invocations')), 'glow-cyan'), stat(api === 'd3d12' ? 'semantic' : 'location', t(L('matchas på', 'matched by')))],
+  ];
+  const keyPanel = ms.panel(t(L('Nyckeltal', 'Key numbers')), [h('div.stat-row.il-keys')], { side: 'right', className: 'il-key' });
+  const keyRow = keyPanel.querySelector('.il-keys')!;
+  let byteCells: HTMLElement[] = [];
+  let rows: { el: HTMLElement; val: HTMLElement; a: VertexAttribute }[] = [];
+  let declEl: HTMLElement | null = null;
+  let bytesTitle: Element | null = null;
+  let caption: Element | null = null;
+  if (!concept) {
+    const bytes = new Uint8Array(l.vertexBuffer, vi * l.stride, l.stride);
+    byteCells = Array.from(bytes, (b, i) => h(`span.mem-cell.${CLS[attrOf(i).name]}`, { text: b.toString(16).padStart(2, '0') }));
+    const bytesPanel = ms.panel(t(L(`Vertex ${vi} · ${l.stride} bytes`, `Vertex ${vi} · ${l.stride} bytes`)), [
+      h('div.il-bytes.mem', { style: { gridTemplateColumns: `repeat(${Math.min(16, l.stride)}, minmax(0, 1fr))` } }, byteCells),
+      h('div.hint.il-hint', { text: `0x${(vi * l.stride).toString(16)} = ${vi} × ${l.stride} B` }),
+    ], { side: 'right', className: 'il-bytes-panel' });
+    bytesTitle = bytesPanel.querySelector('.ms-head span');
+    rows = A.map((a) => {
+      const val = h('span.mono.il-val', { text: fmtVals(attrValues(ctx, a, vi)) });
+      const el = h(`div.il-row.${CLS[a.name]}`, {}, [
+        h('div.il-row-top', {}, [h('b.il-an', { text: a.name }), h('span.mono', { text: slot(a) }), h('span.mono.il-off', { text: `offset ${a.offset}` })]),
+        h('div.il-row-bot', {}, [h('span.mono.il-fmt', { text: a.formats[api] }), val]),
+      ]);
+      return { el, val, a };
+    });
+    declEl = h('pre.il-decl-block', { text: A.map((a) => shaderDecl(api, a)).join('\n') });
+    ms.panel(t(L('Attribut → shaderingångar', 'Attributes → shader inputs')), [
+      h('div.il-rows', {}, rows.map((r) => r.el)),
+      declEl,
+    ], { side: 'right', className: 'il-attr-panel' });
+  } else {
+    const cap = ms.panel(t(L('Vad händer', 'What happens')), [h('p.il-cap')], { side: 'left' });
+    caption = cap.querySelector('.il-cap');
+  }
   const captions: Text[] = [
-    L('För GPU:n är bufferten en lång remsa bytes. Var börjar en vertex? Vad betyder bytesen?', 'To the GPU the buffer is one long strip of bytes. Where does a vertex start? What do the bytes mean?'),
-    L(`Bindingen säger var bufferten finns och hur långt det är till nästa vertex: <b>stride = ${l.stride} B</b>, en vertex per steg.`, `The binding says where the buffer is and how far it is to the next vertex: <b>stride = ${l.stride} B</b>, one vertex per step.`),
-    L('Attributen delar upp vertexen i kolumner – offset och format – och kopplar varje kolumn till en ingång.', 'The attributes split the vertex into columns – offset and format – and plug each column into an input.'),
+    L('För GPU:n är bufferten en remsa bytes. Läst utan beskrivning – här som tätt packade float3 – blir det bara ett moln av skräp.', 'To the GPU the buffer is a strip of bytes. Read without a description – here as tightly packed float3 – it is just a cloud of garbage.'),
+    L(`Bindingen ger rätt steg mellan vertices: <b>stride = ${l.stride} B</b>. Nu börjar varje vertex på rätt ställe.`, `The binding gives the right step between vertices: <b>stride = ${l.stride} B</b>. Now every vertex starts in the right place.`),
+    L('Varje attribut kopplas in med offset och format: positioner blir punkter, normaler blir piggar och UV:n färgar ytan.', 'Each attribute is plugged in with its offset and format: positions become points, normals become spikes and UVs colour the surface.'),
     api === 'd3d12'
-      ? L('HLSL matchar på semantik: POSITION, NORMAL, TEXCOORD0. Nu strömmar en vertex per shaderanrop in.', 'HLSL matches by semantic: POSITION, NORMAL, TEXCOORD0. Now one vertex streams in per shader invocation.')
-      : L('GLSL matchar på location: <code>layout(location = N)</code>. Nu strömmar en vertex per shaderanrop in.', 'GLSL matches by location: <code>layout(location = N)</code>. Now one vertex streams in per shader invocation.'),
+      ? L('HLSL matchar på semantik (POSITION, NORMAL, TEXCOORD0). En vertex per shaderanrop strömmar in.', 'HLSL matches by semantic (POSITION, NORMAL, TEXCOORD0). One vertex per shader invocation streams in.')
+      : L('GLSL matchar på <code>layout(location = N)</code>. En vertex per shaderanrop strömmar in.', 'GLSL matches by <code>layout(location = N)</code>. One vertex per shader invocation streams in.'),
   ];
 
-  let tween: gsap.core.Tween | null = null;
+  /* ---- state ---- */
+  let step = -1;
+  const timers: gsap.core.Tween[] = [];
+  const later = (animate: boolean, s: number, fn: () => void) => {
+    if (!animate) fn();
+    else timers.push(gsap.delayedCall(dur(s), fn));
+  };
+  const setVertex = (i: number) => {
+    vi = i;
+    ms.markVertices([vi], COLORS.white, [`v${vi}`]);
+    rows.forEach((r) => (r.val.textContent = fmtVals(attrValues(ctx, r.a, vi))));
+  };
+  setVertex(vi);
+  const colorCells = (on: VertexAttribute[]) =>
+    cells.forEach((c) => c.mat.color.set(on.includes(c.attr) ? HEXN[c.attr.name] : gray));
+  let tourClock = 0;
+  ms.onFrame((time, dt) => {
+    if (concept && step === 3) {
+      tourClock += dt;
+      const k = Math.floor(tourClock / 1.4) % tour.length;
+      if (tour[k] !== vi) setVertex(tour[k]);
+    }
+    updateConns(time, step >= 3);
+  });
+  const prog = cloudMat.uniforms.uProgress;
+
   return {
     show(stp, animate) {
       step = stp;
-      tween?.kill();
-      const target = { reach: step >= 2 ? 1 : 0, color: step >= 2 ? 1 : 0 };
-      if (animate) tween = gsap.to(st, { ...target, duration: dur(1.1), ease: 'power3.inOut' });
-      else Object.assign(st, target);
-      if (step < 1) rowClock = 0;
-      head.style.opacity = strideLbl.style.opacity = step >= 1 ? '1' : '0';
-      colHeads.forEach((g) => (g.style.opacity = step >= 2 ? '1' : '0'));
-      chip.classList.toggle('on', step >= 3);
-      sockets.forEach((x) => {
-        x.decl.style.opacity = step >= 3 ? '1' : '0';
-        x.name.style.opacity = step >= 2 ? '1' : '0.35';
-      });
-      caption.innerHTML = t(captions[step]);
-      if (animate) gsap.fromTo(caption, { opacity: 0, y: 8 }, { opacity: 1, y: 0, duration: dur(0.4) });
-      update((performance.now() - t0) / 1000);
+      const S = (s: number) => secs(animate, s);
+      timers.splice(0).forEach((x) => x.kill());
+      gsap.killTweensOf([...Object.values(u), ...Object.values(ms.layers).map((x) => x.material), prog, bracketMat, ...conns.map((c) => c.k)]);
+      u.uSweep.value = 100;
+      if (step < 3 || !concept) {
+        tourClock = 0;
+        setVertex(showcase);
+      }
+
+      // Panels
+      keyRow.replaceChildren(...keyStats[step]);
+      if (caption) caption.innerHTML = t(captions[step]);
+      byteCells.forEach((c) => c.classList.toggle('raw', step < 2));
+      rows.forEach((r) => r.el.classList.toggle('off', step < 2));
+      declEl?.classList.toggle('off', step < 3);
+      if (bytesTitle) bytesTitle.textContent = step === 0 ? t(L(`${l.stride} bytes – men var börjar en vertex?`, `${l.stride} bytes – but where does a vertex start?`)) : t(L(`Vertex ${vi} · ${l.stride} bytes`, `Vertex ${vi} · ${l.stride} bytes`));
+
+      // Ribbon
+      rawLbl.visible = step === 0;
+      strideLbl.visible = step >= 1;
+      attrLbls.forEach((lb) => (lb.visible = step >= 2));
+      if (animate && step === 1) {
+        bracketMat.opacity = 0;
+        ms.tween(bracketMat, { opacity: 1, duration: dur(0.6) });
+      } else bracketMat.opacity = step >= 1 ? 1 : 0;
+      colorCells(step >= 2 && !(animate && step === 2) ? A : []);
+
+      // Model
+      ms.setMode('ghost', 1, 0);
+      ms.setLayer('wire', 0, S(0.3));
+      if (step <= 1) {
+        cloud.points.visible = true;
+        ms.setLayer('points', 0, S(0.3));
+        ms.setLayer('normals', 0, S(0.3));
+        ms.setLayer('solid', step === 0 ? 0.08 : 0.15, S(0.4));
+        conns.forEach((c) => (c.k.v = 0));
+        if (step === 0) cloud.progress(0, 0);
+        else {
+          cloud.progress(0, 0);
+          cloud.progress(1, S(2.0));
+        }
+        return;
+      }
+      cloud.points.visible = false;
+      if (step === 2) {
+        // Plug the attributes in one at a time.
+        conns.forEach((c) => (c.k.v = 0));
+        const effects: Record<VertexAttribute['name'], () => void> = {
+          position: () => ms.setLayer('points', 0.85, S(0.5)),
+          normal: () => ms.setLayer('normals', 0.8, S(0.6)),
+          uv: () => {
+            ms.setLayer('solid', 1, S(0.3));
+            if (animate) ms.sweep('uv', 'ghost', 1.4);
+            else ms.setMode('uv', 1, 0);
+          },
+        };
+        ms.setLayer('points', 0, 0);
+        ms.setLayer('normals', 0, 0);
+        ms.setLayer('solid', 0.15, 0);
+        conns.forEach((c, i) => {
+          later(animate, 0.2 + i * 1.3, () => {
+            if (animate) colorCells(A.slice(0, i + 1));
+            if (animate) ms.tween(c.k, { v: 1, duration: dur(0.8), ease: 'power2.inOut', onComplete: () => effects[c.a.name]() });
+            else {
+              c.k.v = 1;
+              effects[c.a.name]();
+            }
+          });
+        });
+        if (!m.uvs) ms.setLayer('solid', 0.6, S(0.6));
+      } else {
+        // Shader matches: every input is wired up, the vertex shader runs per vertex.
+        conns.forEach((c) => (c.k.v = 1));
+        ms.setLayer('points', 0.45, S(0.5));
+        ms.setLayer('normals', 0.35, S(0.5));
+        ms.setLayer('solid', 1, S(0.4));
+        if (animate) ms.sweep('shaded', 'uv', 1.4);
+        else ms.setMode('shaded', 0, 0);
+      }
     },
     destroy() {
-      cancelAnimationFrame(raf);
-      tween?.kill();
-      gsap.killTweensOf(caption);
+      timers.forEach((x) => x.kill());
+      ms.destroy();
     },
   };
 }
@@ -538,6 +502,6 @@ export default standardSlide({
     L('<b>Shadern</b> måste matcha: <code>layout(location = 0) in vec3</code> i GLSL/SPIR-V, <code>: POSITION</code> i HLSL. En miss ger skräpgeometri – inget felmeddelande.', '<b>The shader</b> must match: <code>layout(location = 0) in vec3</code> in GLSL/SPIR-V, <code>: POSITION</code> in HLSL. A mismatch gives garbage geometry – no error message.'),
   ],
   api: apis,
-  data: dataVisual,
-  concept: conceptVisual,
+  data: (host, ctx) => inputVisual(host, ctx, false),
+  concept: (host, ctx) => inputVisual(host, ctx, true),
 });

@@ -4,17 +4,13 @@ import {
   ArrowHelper,
   BufferAttribute,
   BufferGeometry,
-  CanvasTexture,
   Color,
   Group,
-  Line,
   LineBasicMaterial,
   LineSegments,
   Matrix3,
-  MeshBasicMaterial,
   Matrix4,
-  Points,
-  PointsMaterial,
+  MeshBasicMaterial,
   Quaternion,
   Sprite,
   SpriteMaterial,
@@ -26,11 +22,10 @@ import { SHOWCASE_ROT_X, SHOWCASE_ROT_Y } from '../core/derived';
 import { dur, h, num } from '../core/dom';
 import { L, type Text } from '../core/i18n';
 import type { ApiId } from '../core/state';
-import { BASE_COLOR } from '../pipeline/shade';
 import { DEFAULT_CAMERA, matrices, modelMatrix, projectionMatrix, runVertex, viewMatrix, type Camera } from '../pipeline/transform';
-import type { StageView } from '../views/ThreeStage';
-import { COLORS, disposeScene, label, makeScene, shadedMesh, starfield, wireframe } from '../views/three-helpers';
-import { matrixEl } from '../views/widgets';
+import { createModelStage, glowTexture, secs, type ModelStage } from '../views/ModelStage';
+import { COLORS, label } from '../views/three-helpers';
+import { matrixEl, stat } from '../views/widgets';
 import { standardSlide } from './standard';
 import type { ApiPanelSpec, SlideContext, Visual } from './types';
 
@@ -41,20 +36,7 @@ const ASPECT = 1.6; // the 160 × 100 software render every data slide shares
 const clamp01 = (x: number) => Math.max(0, Math.min(1, x));
 const hdr = (hex: number, k: number) => new Color(hex).multiplyScalar(k);
 const ease = (x: number) => x * x * (3 - 2 * x);
-
-function glowTexture(): CanvasTexture {
-  const c = document.createElement('canvas');
-  c.width = c.height = 64;
-  const g = c.getContext('2d')!;
-  const gr = g.createRadialGradient(32, 32, 0, 32, 32, 32);
-  gr.addColorStop(0, 'rgba(255,255,255,1)');
-  gr.addColorStop(0.22, 'rgba(255,255,255,0.85)');
-  gr.addColorStop(0.5, 'rgba(255,255,255,0.25)');
-  gr.addColorStop(1, 'rgba(255,255,255,0)');
-  g.fillStyle = gr;
-  g.fillRect(0, 0, 64, 64);
-  return new CanvasTexture(c);
-}
+const vecText = (v: readonly number[], d = 2) => `(${v.map((x) => num(x, d).trim()).join(', ')})`;
 
 /** A column vector styled like the matrix widget. */
 function colEl(v: readonly number[], digits = 3, cls = ''): HTMLElement {
@@ -68,37 +50,7 @@ function mat3El(m: Matrix3, digits = 3): HTMLElement {
   return h('div.matrix.vs-m3', {}, vals.map((x) => h('span', { text: num(x, digits) })));
 }
 
-/** RGB axes with labels. */
-function axes(len: number, opacity: number, names: [string, string, string], tag: string) {
-  const g = new Group();
-  const cols = [COLORS.red, COLORS.green, COLORS.cyan];
-  const dirs = [new Vector3(1, 0, 0), new Vector3(0, 1, 0), new Vector3(0, 0, 1)];
-  const mats: LineBasicMaterial[] = [];
-  const labels: CSS2DObject[] = [];
-  dirs.forEach((d, i) => {
-    const m = new LineBasicMaterial({ color: hdr(cols[i], 1.6), transparent: true, opacity });
-    mats.push(m);
-    g.add(new Line(new BufferGeometry().setFromPoints([new Vector3(), d.clone().multiplyScalar(len)]), m));
-    const lb = label(names[i], 'vs-axis');
-    lb.element.style.color = '#' + new Color(cols[i]).getHexString();
-    lb.position.copy(d.clone().multiplyScalar(len * 1.08));
-    g.add(lb);
-    labels.push(lb);
-  });
-  const tagLabel = label(tag, 'vs-tag');
-  tagLabel.position.set(len * 0.1, -len * 0.18, 0);
-  g.add(tagLabel);
-  labels.push(tagLabel);
-  return {
-    group: g,
-    set(k: number) {
-      mats.forEach((m) => (m.opacity = 0.12 + 0.88 * k));
-      labels.forEach((l) => (l.element.style.opacity = String(0.15 + 0.85 * k)));
-    },
-  };
-}
-
-/** Frustum corners (near quad, far quad) in world space for a camera pose. */
+/** Frustum corners (near quad 0–3, far quad 4–7) in world space for a camera pose. */
 function frustumCorners(cam: Camera, aspect: number, far: number): Vector3[] {
   const eye = new Vector3(...cam.eye);
   const z = eye.clone().sub(new Vector3(...cam.target)).normalize();
@@ -121,8 +73,323 @@ function frustumCorners(cam: Camera, aspect: number, far: number): Vector3[] {
   return out;
 }
 
-/** 12 edges of a frustum / box given 8 corners (near 0–3, far 4–7) + 4 apex lines. */
+/** 12 edges of a frustum / box given 8 corners (near 0–3, far 4–7). */
 const BOX_EDGES = [0, 1, 1, 2, 2, 3, 3, 0, 4, 5, 5, 6, 6, 7, 7, 4, 0, 4, 1, 5, 2, 6, 3, 7];
+
+/** Shows only the panels of the current step (so the XR panel reads the right stats). */
+function stepPanels(list: { el: HTMLElement; steps: number[] }[]) {
+  const slots = list.map((p) => p.el.parentElement!);
+  return (step: number, animate: boolean) => {
+    list.forEach((p, i) => {
+      const on = p.steps.includes(step);
+      if (!on) p.el.remove();
+      else if (!p.el.isConnected) {
+        slots[i].append(p.el);
+        if (animate) gsap.fromTo(p.el, { opacity: 0, y: 12 }, { opacity: 1, y: 0, duration: dur(0.45), ease: 'power2.out' });
+      }
+    });
+    list.forEach((p, i) => p.el.isConnected && slots[i].append(p.el));
+  };
+}
+
+function killStageTweens(ms: ModelStage) {
+  Object.values(ms.material.uniforms).forEach((u) => gsap.killTweensOf(u));
+  Object.values(ms.layers).forEach((l) => gsap.killTweensOf(l.material));
+}
+
+/** A dynamic line set whose points are recomputed on the CPU every frame. */
+function lineSet(parent: Group, n: number, color: Color, opacity: number, vertexColors?: Float32Array) {
+  const arr = new Float32Array(n * 3);
+  const g = new BufferGeometry();
+  g.setAttribute('position', new BufferAttribute(arr, 3));
+  if (vertexColors) g.setAttribute('color', new BufferAttribute(vertexColors, 3));
+  const mat = new LineBasicMaterial({ color: vertexColors ? 0xffffff : color, vertexColors: !!vertexColors, transparent: true, opacity, depthWrite: false });
+  const ls = new LineSegments(g, mat);
+  ls.frustumCulled = false;
+  parent.add(ls);
+  return {
+    ls,
+    mat,
+    set(i: number, v: Vector3) {
+      arr[i * 3] = v.x;
+      arr[i * 3 + 1] = v.y;
+      arr[i * 3 + 2] = v.z;
+    },
+    done() {
+      g.attributes.position.needsUpdate = true;
+    },
+  };
+}
+
+const axisColors = (k: number) => {
+  const c = new Float32Array(18);
+  [COLORS.red, COLORS.green, COLORS.cyan].forEach((hex, i) => {
+    const col = hdr(hex, k);
+    c.set([col.r, col.g, col.b, col.r, col.g, col.b], i * 6);
+  });
+  return c;
+};
+
+/* ------------------------------------------------------------------ */
+/* One scene for both modes: the model travels object → world → view → clip */
+/* ------------------------------------------------------------------ */
+interface VsSetup {
+  /** Model matrix at progress a (0 = identity, 1 = the real one). */
+  model: (a: number) => Matrix4;
+  cam: Camera;
+  /** Camera pose before it "flies in" (concept). */
+  startEye?: Vector3;
+  /** World props (concept): pairs of points. */
+  props?: { pts: Vector3[]; color: number; opacity: number }[];
+}
+
+interface VsScene {
+  ms: ModelStage;
+  S: { s: number; cam: number; fly: number; nrm: number; obj: number };
+  /** Display position (root space) of a model-space point at the current s. */
+  vertexAt(p: Vector3): Vector3;
+  observer(step: number, animate: boolean): void;
+}
+
+function buildScene(host: HTMLElement, ctx: SlideContext, setup: VsSetup, opts: { shift: number; vIdx: number }): VsScene {
+  const api = ctx.state.api;
+  const ms = createModelStage(host, ctx, {
+    shift: opts.shift,
+    autoRotate: 0,
+    bloom: 0.35,
+    bloomThreshold: 0.92,
+    eye: [2.4, 1.3, 2.9],
+    layers: { solid: 1, wire: 0.1 },
+  });
+  const tex = glowTexture();
+  const cam = setup.cam;
+  const V = viewMatrix(cam);
+  const P = projectionMatrix(api, cam, ASPECT);
+  const camDist = new Vector3(...cam.eye).distanceTo(new Vector3(...cam.target));
+  const K = camDist * 0.28; // the view-space scene: model near the middle, camera off to the side
+  const zMin = api === 'opengl' ? -1 : 0;
+  const BOX = 1.15;
+  const vq = new Quaternion().setFromRotationMatrix(V);
+  const vt = new Vector3().setFromMatrixPosition(V);
+  const D = new Matrix4().set(BOX, 0, 0, 0, 0, BOX, 0, 0, 0, 0, -BOX, (BOX * (1 + zMin)) / 2, 0, 0, 0, 1);
+  const A3 = new Matrix4().makeTranslation(0, 0, camDist - K).multiply(V); // view space, centred
+  const B3 = D.clone().multiply(P).multiply(V); // clip space shown as the NDC box (after the GPU divide)
+  const DISP_FAR = Math.min(cam.far, camDist + 0.5);
+
+  // Everything lives under a scaled root so the whole journey stays within ~±2.5 units.
+  const root = new Group();
+  root.scale.setScalar(0.78);
+  ms.scene.add(root);
+  root.add(ms.pivot);
+  ms.pivot.matrixAutoUpdate = false;
+  Object.values(ms.layers).forEach((l) => (l.frustumCulled = false));
+
+  const S = { s: 0, cam: 0, fly: 1, nrm: 0, obj: 1 };
+  const disp = new Matrix4();
+  const tmpM = new Matrix4();
+  const qI = new Quaternion();
+  const q = new Quaternion();
+  /** world → display (root space) for the current s. */
+  const worldDisp = (s: number, out: Matrix4) => {
+    if (s <= 1) return out.identity();
+    if (s <= 2) {
+      const a2 = ease(clamp01(s - 1));
+      q.slerpQuaternions(qI, vq, a2);
+      const t = vt.clone().multiplyScalar(a2);
+      t.z += (camDist - K) * a2;
+      return out.compose(t, q, new Vector3(1, 1, 1));
+    }
+    const a3 = ease(clamp01(s - 2));
+    const ea = A3.elements;
+    const eb = B3.elements;
+    for (let i = 0; i < 16; i++) out.elements[i] = ea[i] * (1 - a3) + eb[i] * a3;
+    return out;
+  };
+
+  // Object axes ride with the model (GPU), labels are placed on the CPU.
+  const objAxes = new LineSegments(
+    new BufferGeometry().setFromPoints([new Vector3(), new Vector3(1.25, 0, 0), new Vector3(), new Vector3(0, 1.25, 0), new Vector3(), new Vector3(0, 0, 1.25)]),
+    new LineBasicMaterial({ vertexColors: true, transparent: true, depthTest: false }),
+  );
+  objAxes.geometry.setAttribute('color', new BufferAttribute(axisColors(1.8), 3));
+  objAxes.frustumCulled = false;
+  objAxes.renderOrder = 6;
+  ms.pivot.add(objAxes);
+  const mkLabel = (text: string, cls: string, color?: number) => {
+    const lb = label(text, cls);
+    if (color !== undefined) lb.element.style.color = '#' + new Color(color).getHexString();
+    root.add(lb);
+    return lb;
+  };
+  const AX = [new Vector3(1, 0, 0), new Vector3(0, 1, 0), new Vector3(0, 0, 1)];
+  const AXC = [COLORS.red, COLORS.green, COLORS.cyan];
+  const objAxisLabels = ['x', 'y', 'z'].map((n, i) => mkLabel(n, 'vs-axis', AXC[i]));
+  const objTag = mkLabel('object', 'vs-tag');
+
+  // World axes (and concept props) are transformed on the CPU.
+  const worldAxes = lineSet(root, 6, new Color(), 1, axisColors(1.6));
+  const worldAxisLabels = ['X', 'Y', 'Z'].map((n, i) => mkLabel(n, 'vs-axis', AXC[i]));
+  const worldTag = mkLabel('world', 'vs-tag');
+  const props = (setup.props ?? []).map((p) => ({ ...p, set: lineSet(root, p.pts.length, hdr(p.color, 1.3), p.opacity) }));
+
+  // Camera gizmo + frustum.
+  const camAxes = lineSet(root, 6, new Color(), 1, axisColors(1.8));
+  const camTag = mkLabel('camera', 'vs-tag');
+  const frustum = lineSet(root, BOX_EDGES.length + 8, hdr(COLORS.amber, 1.5), 0.8);
+  const nearTag = mkLabel('', 'vs-tag amber');
+  const farTag = mkLabel('', 'vs-tag amber');
+  const yTag = mkLabel('', 'vs-tag');
+
+  // The followed vertex, its position vector and the view ray.
+  const p0 = new Vector3(...ctx.derived.position(opts.vIdx));
+  const n0 = new Vector3(...ctx.derived.normal(opts.vIdx));
+  const vSprite = new Sprite(new SpriteMaterial({ map: tex, color: hdr(COLORS.cyan, 1.35), transparent: true, depthTest: false, blending: AdditiveBlending }));
+  vSprite.renderOrder = 20;
+  root.add(vSprite);
+  const vLabel = mkLabel(`v${opts.vIdx}`, 'cyan big');
+  const posLine = lineSet(root, 2, hdr(COLORS.cyan, 1.8), 0);
+  const ray = lineSet(root, 2, hdr(COLORS.amber, 2), 0);
+  ray.mat.depthTest = false;
+  posLine.mat.depthTest = false;
+  const arrow = new ArrowHelper(new Vector3(0, 1, 0), new Vector3(), 0.6, COLORS.magenta, 0.14, 0.08);
+  (arrow.line.material as LineBasicMaterial).color = hdr(COLORS.magenta, 2.2);
+  for (const m of [arrow.line.material, arrow.cone.material] as (LineBasicMaterial | MeshBasicMaterial)[]) m.depthTest = false;
+  arrow.line.renderOrder = arrow.cone.renderOrder = 21;
+  root.add(arrow);
+  const nLabel = mkLabel('n', 'magenta');
+
+  const M = new Matrix4();
+  const full = new Matrix4();
+  const tv = new Vector3();
+  const setO = (lb: CSS2DObject, o: number) => {
+    lb.element.style.opacity = String(o);
+    lb.visible = o > 0.01;
+  };
+  const tagAt = (lb: CSS2DObject, w: Vector3, o: number) => {
+    lb.position.copy(w).applyMatrix4(disp);
+    setO(lb, o);
+  };
+  /** Concept props can sit behind the camera: lerp with clamped NDC instead of the exact path. */
+  const propPoint = (w: Vector3, s: number, out: Vector3) => {
+    if (s <= 2) return out.copy(w).applyMatrix4(worldDisp(s, tmpM));
+    const a3 = ease(clamp01(s - 2));
+    const a = out.copy(w).applyMatrix4(A3);
+    const c = w.clone().applyMatrix4(V);
+    const clip = [P.elements[0] * c.x + P.elements[4] * c.y + P.elements[8] * c.z + P.elements[12], P.elements[1] * c.x + P.elements[5] * c.y + P.elements[9] * c.z + P.elements[13], P.elements[2] * c.x + P.elements[6] * c.y + P.elements[10] * c.z + P.elements[14], P.elements[3] * c.x + P.elements[7] * c.y + P.elements[11] * c.z + P.elements[15]];
+    const ww = Math.max(1e-3, clip[3]);
+    const nx = Math.max(-1.6, Math.min(1.6, clip[0] / ww));
+    const ny = Math.max(-1.6, Math.min(1.6, clip[1] / ww));
+    const nz = Math.max(zMin - 0.3, Math.min(1.3, clip[2] / ww));
+    const b = new Vector3(nx, ny, nz).applyMatrix4(D);
+    return a.lerp(b, a3);
+  };
+  const pivotM = new Matrix4();
+
+  ms.onFrame((time) => {
+    const s = S.s;
+    const a1 = ease(clamp01(s));
+    const a3 = clamp01(s - 2);
+    M.copy(setup.model(a1));
+    worldDisp(s, disp);
+    full.multiplyMatrices(disp, M);
+    pivotM.copy(full);
+    ms.pivot.matrix.copy(pivotM);
+    ms.pivot.matrixWorldNeedsUpdate = true;
+    const pulse = 0.5 + 0.5 * Math.sin(time * 4);
+    // Object axes + labels.
+    const objO = S.obj * (1 - a3);
+    (objAxes.material as LineBasicMaterial).opacity = 0.15 + 0.85 * objO;
+    AX.forEach((d, i) => tagAt(objAxisLabels[i], tv.copy(d).multiplyScalar(1.33).applyMatrix4(M), objO));
+    tagAt(objTag, tv.set(0.12, -0.2, 0).applyMatrix4(M), objO);
+    // World axes.
+    const worldO = clamp01(s * 2) * (1 - 0.75 * clamp01(s - 1)) * (1 - a3) * (1 - S.nrm * 0.6);
+    const wl = 1.7;
+    [0, 1, 2].forEach((i) => {
+      worldAxes.set(i * 2, tv.set(0, 0, 0).applyMatrix4(disp));
+      worldAxes.set(i * 2 + 1, tv.copy(AX[i]).multiplyScalar(wl).applyMatrix4(disp));
+      tagAt(worldAxisLabels[i], tv.copy(AX[i]).multiplyScalar(wl * 1.07), worldO);
+    });
+    worldAxes.done();
+    worldAxes.mat.opacity = worldO;
+    tagAt(worldTag, tv.set(wl * 0.55, -0.12, 0), worldO * (1 - clamp01(s - 1)));
+    // Concept props.
+    props.forEach((p) => {
+      p.pts.forEach((w, i) => p.set.set(i, propPoint(w, s, tv)));
+      p.set.done();
+      p.set.mat.opacity = p.opacity * (0.35 + 0.65 * clamp01(s));
+    });
+    // Camera gizmo (it flies in for the concept) and frustum.
+    const fly = ease(S.fly);
+    const eyeNow = setup.startEye ? setup.startEye.clone().lerp(new Vector3(...cam.eye), fly) : new Vector3(...cam.eye);
+    const pose: Camera = { ...cam, eye: [eyeNow.x, eyeNow.y, eyeNow.z] };
+    const inv = viewMatrix(pose).invert();
+    const camO = S.cam * clamp01(1 - a3 * 2.2);
+    // The eye itself goes to infinity in clip space (w = 0): only place eye-anchored things while visible.
+    const eyeOk = a3 < 0.45;
+    if (eyeOk) {
+      [0, 1, 2].forEach((i) => {
+        camAxes.set(i * 2, tv.set(0, 0, 0).applyMatrix4(inv).applyMatrix4(disp));
+        camAxes.set(i * 2 + 1, tv.copy(AX[i]).multiplyScalar(0.5).applyMatrix4(inv).applyMatrix4(disp));
+      });
+      camAxes.done();
+    }
+    camAxes.mat.opacity = camO;
+    camAxes.ls.visible = camO > 0.01;
+    if (eyeOk) tagAt(camTag, tv.set(0, -0.2, 0).applyMatrix4(inv), camO);
+    else setO(camTag, 0);
+    const far = DISP_FAR + (cam.far - DISP_FAR) * ease(a3);
+    const cs = frustumCorners(pose, ASPECT, far);
+    BOX_EDGES.forEach((ci, k) => frustum.set(k, tv.copy(cs[ci]).applyMatrix4(disp)));
+    for (let i = 0; i < 4; i++) {
+      // Apex lines run eye → near corner; they collapse onto the near face in clip space.
+      frustum.set(BOX_EDGES.length + i * 2, eyeOk ? tv.copy(eyeNow).applyMatrix4(disp) : tv.copy(cs[i]).applyMatrix4(disp));
+      frustum.set(BOX_EDGES.length + i * 2 + 1, tv.copy(cs[i]).applyMatrix4(disp));
+    }
+    frustum.done();
+    frustum.mat.opacity = S.cam * (0.55 + 0.4 * a3);
+    frustum.ls.visible = S.cam > 0.01;
+    const zr = api === 'opengl' ? ['z = −1', 'z = +1'] : ['z = 0', 'z = 1'];
+    nearTag.element.textContent = a3 > 0.5 ? `near · ${zr[0]}` : `near = ${cam.near}`;
+    farTag.element.textContent = a3 > 0.5 ? `far · ${zr[1]}` : `far = ${cam.far}${far < cam.far ? ' →' : ''}`;
+    yTag.element.textContent = api === 'vulkan' ? '+y ↓ (Vulkan)' : '+y ↑';
+    tagAt(nearTag, cs[1], S.cam * clamp01(0.5 + a3));
+    tagAt(farTag, cs[4], S.cam * clamp01(0.4 + a3));
+    tagAt(yTag, cs[7], S.cam * a3);
+    // The vertex.
+    const vp = tv.copy(p0).applyMatrix4(full);
+    vSprite.position.copy(vp);
+    vSprite.scale.setScalar(0.09 + 0.03 * pulse);
+    vLabel.position.copy(vp).add(new Vector3(0, -0.16, 0));
+    posLine.set(0, new Vector3().applyMatrix4(full));
+    posLine.set(1, vp);
+    posLine.done();
+    posLine.mat.opacity = S.obj * (1 - clamp01(s - 1)) * 0.9;
+    if (eyeOk) {
+      ray.set(0, eyeNow.clone().applyMatrix4(disp));
+      ray.set(1, vp);
+      ray.done();
+    }
+    ray.mat.opacity = S.cam * clamp01(1 - a3 * 2.2) * 0.85;
+    // The normal (world space, shown when s ≈ 1).
+    const nm = new Matrix3().getNormalMatrix(M);
+    const nw = n0.clone().applyMatrix3(nm).normalize();
+    arrow.position.copy(vp);
+    arrow.setDirection(nw);
+    arrow.visible = S.nrm > 0.01;
+    arrow.scale.setScalar(Math.max(0.01, S.nrm));
+    nLabel.position.copy(vp).addScaledVector(nw, 0.75);
+    setO(nLabel, S.nrm);
+  });
+
+  const observer = (step: number, animate: boolean) => {
+    // Close on the model; from the side for view space (camera + frustum); from the front for the NDC box.
+    const target = step === 2 ? new Vector3(3.0, 1.7, 3.2) : step === 3 ? new Vector3(1.1, 0.7, 3.2) : new Vector3(2.2, 1.2, 2.6);
+    gsap.killTweensOf(ms.camera.position);
+    if (animate) gsap.to(ms.camera.position, { x: target.x, y: target.y, z: target.z, duration: dur(1.4), ease: 'power2.inOut' });
+    else ms.camera.position.copy(target);
+  };
+  return { ms, S, vertexAt: (p) => p.clone().applyMatrix4(full), observer };
+}
 
 /* ------------------------------------------------------------------ */
 /* Real data                                                           */
@@ -130,7 +397,6 @@ const BOX_EDGES = [0, 1, 1, 2, 2, 3, 3, 0, 4, 5, 5, 6, 6, 7, 7, 4, 0, 4, 1, 5, 2
 function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
   const { t } = ctx;
   const api = ctx.state.api;
-  const mesh = ctx.state.mesh;
   const tri = ctx.derived.showcaseTriangle(api);
   const vIdx = ctx.derived.triangleVertices(tri)[0];
   const p = ctx.derived.position(vIdx);
@@ -140,121 +406,10 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
   const nm = new Matrix3().getNormalMatrix(mats.model);
   const nWorld = new Vector3(...n).applyMatrix3(nm).normalize();
   const cam = DEFAULT_CAMERA;
+  const V = buildScene(host, ctx, { model: (a) => modelMatrix(a * SHOWCASE_ROT_Y, a * SHOWCASE_ROT_X), cam }, { shift: -0.17, vIdx });
+  const { ms, S } = V;
 
-  /* ---------- 3D scene ---------- */
-  const { scene, camera } = makeScene();
-  camera.position.set(5.2, 2.5, 2.6);
-  camera.lookAt(0, 0, 0);
-  const tex = glowTexture();
-  scene.add(starfield(500));
-  const model = new Group();
-  model.matrixAutoUpdate = false;
-  const solid = shadedMesh(mesh, [BASE_COLOR[0] * 0.55, BASE_COLOR[1] * 0.55, BASE_COLOR[2] * 0.6]);
-  const wire = wireframe(mesh, COLORS.violet, 0.12);
-  model.add(solid, wire);
-  const objAxes = axes(1.25, 1, ['x', 'y', 'z'], 'object');
-  model.add(objAxes.group);
-  scene.add(model);
-  const worldAxes = axes(1.9, 1, ['X', 'Y', 'Z'], 'world');
-  scene.add(worldAxes.group);
-
-  // Camera gizmo: axes in camera orientation + frustum (far cut for display).
-  const camGroup = new Group();
-  const vInv = viewMatrix(cam).clone().invert();
-  camGroup.matrixAutoUpdate = false;
-  camGroup.matrix.copy(vInv);
-  const camAxes = axes(0.55, 1, ['x', 'y', 'z'], 'camera');
-  camGroup.add(camAxes.group);
-  scene.add(camGroup);
-  const DISP_FAR = 5.2;
-  const corners = frustumCorners(cam, ASPECT, DISP_FAR);
-  const eye = new Vector3(...cam.eye);
-  const fPts: Vector3[] = BOX_EDGES.map((i) => corners[i]);
-  for (let i = 0; i < 4; i++) fPts.push(eye, corners[i]);
-  const frMat = new LineBasicMaterial({ color: hdr(COLORS.amber, 1.4), transparent: true, opacity: 0.2 });
-  const frustum = new LineSegments(new BufferGeometry().setFromPoints(fPts), frMat);
-  scene.add(frustum);
-  const farLabel = label(`far = ${cam.far} →`, 'vs-tag');
-  farLabel.position.copy(corners[5]);
-  const nearLabel = label(`near = ${cam.near}`, 'vs-tag');
-  nearLabel.position.copy(corners[1]);
-  scene.add(farLabel, nearLabel);
-
-  // The vertex.
-  const vSprite = new Sprite(new SpriteMaterial({ map: tex, color: hdr(COLORS.cyan, 3), transparent: true, depthTest: false, blending: AdditiveBlending }));
-  vSprite.renderOrder = 20;
-  scene.add(vSprite);
-  const vLabel = label(`v${vIdx}`, 'cyan big');
-  scene.add(vLabel);
-  // Object-space position vector (from model origin) and view ray (from eye).
-  const posLineGeo = new BufferGeometry().setFromPoints([new Vector3(), new Vector3()]);
-  const posLine = new Line(posLineGeo, new LineBasicMaterial({ color: hdr(COLORS.cyan, 1.6), transparent: true, opacity: 0 }));
-  const rayGeo = new BufferGeometry().setFromPoints([new Vector3(), new Vector3()]);
-  const ray = new Line(rayGeo, new LineBasicMaterial({ color: hdr(COLORS.amber, 2), transparent: true, opacity: 0, depthTest: false }));
-  const nearDot = new Sprite(new SpriteMaterial({ map: tex, color: hdr(COLORS.amber, 3), transparent: true, opacity: 0, depthTest: false, blending: AdditiveBlending }));
-  nearDot.scale.setScalar(0.12);
-  posLine.frustumCulled = false;
-  ray.frustumCulled = false;
-  scene.add(posLine, ray, nearDot);
-  const arrow = new ArrowHelper(nWorld, new Vector3(), 0.75, COLORS.magenta, 0.16, 0.09);
-  (arrow.line.material as LineBasicMaterial).color = hdr(COLORS.magenta, 2.2);
-  // Draw on top: from the observer's angle the vertex may sit on the far side of the model.
-  for (const m of [arrow.line.material, arrow.cone.material] as (LineBasicMaterial | MeshBasicMaterial)[]) m.depthTest = false;
-  arrow.line.renderOrder = arrow.cone.renderOrder = 21;
-  scene.add(arrow);
-  const nLabel = label('n', 'magenta');
-  scene.add(nLabel);
-
-  // Center the interesting region (model → camera) on the orbit pivot.
-  const root = new Group();
-  for (const c of [...scene.children]) if (!(c instanceof Points)) root.add(c);
-  root.position.set(0, -0.35, -1.45);
-  scene.add(root);
-
-  const P = { rot: 0, obj: 1, world: 0, cam: 0, clip: 0, nrm: 0 };
-  const objP = new Vector3(...p);
-  const view: StageView = {
-    scene,
-    camera,
-    bloom: 0.85,
-    bloomThreshold: 0.8,
-    orbit: true,
-    onFrame: (time) => {
-      const M = modelMatrix(P.rot * SHOWCASE_ROT_Y, P.rot * SHOWCASE_ROT_X);
-      model.matrix.copy(M);
-      model.matrixWorldNeedsUpdate = true;
-      const wp = objP.clone().applyMatrix4(M);
-      const pulse = 0.5 + 0.5 * Math.sin(time * 4);
-      vSprite.position.copy(wp);
-      vSprite.scale.setScalar(0.16 + 0.05 * pulse);
-      vLabel.position.copy(wp).add(new Vector3(0, -0.17, 0));
-      objAxes.set(P.obj);
-      worldAxes.set(P.world);
-      camAxes.set(P.cam);
-      frMat.opacity = 0.1 + 0.65 * Math.max(P.cam * 0.6, P.clip);
-      farLabel.element.style.opacity = nearLabel.element.style.opacity = String(Math.max(P.cam * 0.5, P.clip));
-      posLineGeo.setFromPoints([new Vector3(), wp]);
-      (posLine.material as LineBasicMaterial).opacity = P.obj * 0.9;
-      rayGeo.setFromPoints([eye, wp]);
-      (ray.material as LineBasicMaterial).opacity = Math.max(P.cam, P.clip) * 0.9;
-      // Where the ray to the vertex crosses the near plane (the "projection").
-      const dView = -st.view[2];
-      nearDot.position.copy(eye.clone().lerp(wp, cam.near / dView));
-      (nearDot.material as SpriteMaterial).opacity = P.clip * (0.7 + 0.3 * pulse);
-      arrow.position.copy(wp);
-      arrow.setDirection(new Vector3(...n).applyMatrix3(new Matrix3().getNormalMatrix(M)).normalize());
-      arrow.visible = P.nrm > 0.01;
-      arrow.scale.setScalar(Math.max(0.01, P.nrm));
-      nLabel.position.copy(wp).addScaledVector(nWorld, 0.9);
-      nLabel.element.style.opacity = String(P.nrm);
-      (wire.material as LineBasicMaterial).opacity = 0.08 + 0.1 * P.obj;
-    },
-  };
-  const stageHost = h('div.vs-3d');
-  const hud = h('div.vs-hud');
-  stageHost.append(hud);
-
-  /* ---------- Equation cards ---------- */
+  /* ---------- Equation panels ---------- */
   const op = (s: string) => h('span.vs-op', { text: s });
   const named = (name: string, el: HTMLElement, cls = '') => h(`div.vs-named${cls ? '.' + cls : ''}`, {}, [h('div.vs-name', { html: name }), el]);
   const mul = (mName: string, mEl: HTMLElement, a: { n: string; v: number[]; c: string }, b: { n: string; v: number[]; c: string }) =>
@@ -263,60 +418,51 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
   const zView = st.view[2];
   const pe = mats.proj.elements;
   const projNote: Record<ApiId, L> = {
-    opengl: L(
-      `OpenGL: z<sub>clip</sub> = ${num(pe[10], 3)}·z + ${num(pe[14], 3)} → efter division hamnar z i [−1, 1].`,
-      `OpenGL: z<sub>clip</sub> = ${num(pe[10], 3)}·z + ${num(pe[14], 3)} → after the divide z lands in [−1, 1].`,
-    ),
-    vulkan: L(
-      `Vulkan: rad 2 är negerad (${num(pe[5], 3)}) eftersom +y pekar <b>nedåt</b> i Vulkans clip space; z hamnar i [0, 1].`,
-      `Vulkan: row 2 is negated (${num(pe[5], 3)}) because +y points <b>down</b> in Vulkan clip space; z lands in [0, 1].`,
-    ),
-    d3d12: L(
-      `D3D12 (som XMMatrixPerspectiveFovRH): z<sub>clip</sub> = ${num(pe[10], 3)}·z + ${num(pe[14], 3)} → z hamnar i [0, 1], +y uppåt.`,
-      `D3D12 (like XMMatrixPerspectiveFovRH): z<sub>clip</sub> = ${num(pe[10], 3)}·z + ${num(pe[14], 3)} → z lands in [0, 1], +y up.`,
-    ),
+    opengl: L(`OpenGL: z<sub>clip</sub> = ${num(pe[10], 3)}·z + ${num(pe[14], 3)} → efter division z ∈ [−1, 1].`, `OpenGL: z<sub>clip</sub> = ${num(pe[10], 3)}·z + ${num(pe[14], 3)} → after the divide z ∈ [−1, 1].`),
+    vulkan: L(`Vulkan: rad 2 är negerad (${num(pe[5], 3)}) – +y pekar <b>nedåt</b>, modellen står på huvudet i lådan; z ∈ [0, 1].`, `Vulkan: row 2 is negated (${num(pe[5], 3)}) – +y points <b>down</b>, the model is upside down in the box; z ∈ [0, 1].`),
+    d3d12: L(`D3D12 (som XMMatrixPerspectiveFovRH): z<sub>clip</sub> = ${num(pe[10], 3)}·z + ${num(pe[14], 3)} → z ∈ [0, 1], +y uppåt.`, `D3D12 (like XMMatrixPerspectiveFovRH): z<sub>clip</sub> = ${num(pe[10], 3)}·z + ${num(pe[14], 3)} → z ∈ [0, 1], +y up.`),
   };
   const outName = api === 'd3d12' ? 'SV_Position' : 'gl_Position';
-  const cards: { title: Text; body: HTMLElement; note: Text }[] = [
+  const defs: { title: Text; stats: HTMLElement[]; body: HTMLElement; note: Text }[] = [
     {
       title: L(`Objektrymd · vertex ${vIdx}`, `Object space · vertex ${vIdx}`),
-      body: h('div.vs-eq', {}, [
-        named('aPos', colEl(p, 3, 'c-pos')),
-        op('→'),
-        named('p<sub>obj</sub>', colEl([...p, 1], 3, 'c-pos.hot')),
-        h('div.vs-side', {}, [h('div.vs-name', { text: 'aNormal' }), colEl(n, 3, 'c-nrm')]),
-      ]),
+      stats: [stat(vecText(p), 'p_obj', 'c-pos')],
+      body: h('div.vs-eq', {}, [named('aPos', colEl(p, 3, 'c-pos')), op('→'), named('p<sub>obj</sub>', colEl([...p, 1], 3, 'c-pos.hot')), h('div.vs-side', {}, [h('div.vs-name', { text: 'aNormal' }), colEl(n, 3, 'c-nrm')])]),
       note: L(
-        'Positionen som den står i vertexbufferten, relativt modellens eget origo. Med <b>w = 1</b> blir den en punkt, så förflyttningar i matriserna påverkar den.',
-        'The position exactly as stored in the vertex buffer, relative to the model\'s own origin. With <b>w = 1</b> it is a point, so translations in the matrices affect it.',
+        'Positionen som den står i vertexbufferten, relativt modellens eget origo. Med <b>w = 1</b> blir den en punkt, så förflyttningar påverkar den.',
+        "The position exactly as stored in the vertex buffer, relative to the model's own origin. With <b>w = 1</b> it is a point, so translations affect it.",
       ),
     },
     {
       title: L('uModel · objekt → värld', 'uModel · object → world'),
+      stats: [stat(vecText(st.world), 'p_world', 'c-g')],
       body: mul('uModel', matrixEl(mats.model, 3), vec('p<sub>obj</sub>', [...p, 1], 'c-pos'), vec('p<sub>world</sub>', st.world, 'c-g')),
       note: L(
-        `Modellmatrisen roterar ${SHOWCASE_ROT_Y} rad kring Y och ${SHOWCASE_ROT_X} rad kring X. Ingen translation här – modellen är centrerad och normaliserad vid inläsningen.`,
-        `The model matrix rotates ${SHOWCASE_ROT_Y} rad around Y and ${SHOWCASE_ROT_X} rad around X. No translation here – the model was centered and normalized on import.`,
+        `Modellmatrisen roterar ${SHOWCASE_ROT_Y} rad kring Y och ${SHOWCASE_ROT_X} rad kring X. Ingen translation – modellen centrerades vid inläsningen.`,
+        `The model matrix rotates ${SHOWCASE_ROT_Y} rad around Y and ${SHOWCASE_ROT_X} rad around X. No translation – the model was centered on import.`,
       ),
     },
     {
       title: L('uView · värld → kamera', 'uView · world → view'),
+      stats: [stat(vecText(st.view), 'p_view', 'c-a'), stat(num(-zView, 2).trim(), t(L('framför kameran', 'in front of camera')))],
       body: mul('uView', matrixEl(mats.view, 3), vec('p<sub>world</sub>', st.world, 'c-g'), vec('p<sub>view</sub>', st.view, 'c-a')),
       note: L(
-        `Kameran står i (${cam.eye.join(', ')}) och tittar mot origo. I kamerarymd tittar kameran längs <b>−Z</b>: vertexen ligger ${num(-zView, 3)} enheter framför den (z = ${num(zView, 3)}).`,
-        `The camera sits at (${cam.eye.join(', ')}) looking at the origin. In view space the camera looks down <b>−Z</b>: the vertex is ${num(-zView, 3)} units in front of it (z = ${num(zView, 3)}).`,
+        `Kameran står i (${cam.eye.join(', ')}). Hela världen flyttas så att kameran hamnar i origo och tittar längs <b>−Z</b>.`,
+        `The camera sits at (${cam.eye.join(', ')}). The whole world moves so the camera ends up at the origin looking down <b>−Z</b>.`,
       ),
     },
     {
-      title: L(`uProj · kamera → clip  (${outName})`, `uProj · view → clip  (${outName})`),
+      title: L(`uProj · kamera → clip (${outName})`, `uProj · view → clip (${outName})`),
+      stats: [stat(vecText(st.clip), outName, 'glow-magenta'), stat(num(st.clip[3], 3).trim(), 'w = −z_view')],
       body: mul('uProj', matrixEl(mats.proj, 3), vec('p<sub>view</sub>', st.view, 'c-a'), vec(outName, st.clip, 'glow-magenta')),
       note: L(
-        `fov ${cam.fovY}°, aspect ${ASPECT}, near ${cam.near}, far ${cam.far}. Sista raden (0 0 −1 0) ger <b>w = −z<sub>view</sub> = ${num(st.clip[3], 3)}</b> – det perspektivdivisionen delar med. ${projNote[api].sv}`,
-        `fov ${cam.fovY}°, aspect ${ASPECT}, near ${cam.near}, far ${cam.far}. The last row (0 0 −1 0) gives <b>w = −z<sub>view</sub> = ${num(st.clip[3], 3)}</b> – what the perspective divide divides by. ${projNote[api].en}`,
+        `fov ${cam.fovY}°, aspect ${ASPECT}, near ${cam.near}, far ${cam.far}. Sista raden ger w = −z<sub>view</sub>. Lådan visar resultatet efter GPU:ns division med w – frustumet blir NDC. ${projNote[api].sv}`,
+        `fov ${cam.fovY}°, aspect ${ASPECT}, near ${cam.near}, far ${cam.far}. The last row gives w = −z<sub>view</sub>. The box shows the result after the GPU divides by w – the frustum becomes NDC. ${projNote[api].en}`,
       ),
     },
     {
       title: L('Normalen · normalmatris', 'The normal · normal matrix'),
+      stats: [stat(vecText([nWorld.x, nWorld.y, nWorld.z]), 'n_world', 'c-nrm')],
       body: h('div.vs-eq', {}, [
         named('N = (M<sub>3×3</sub><sup>−1</sup>)<sup>T</sup>', mat3El(nm), 'mat'),
         op('×'),
@@ -325,15 +471,12 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
         named('n<sub>world</sub>', colEl([nWorld.x, nWorld.y, nWorld.z], 3, 'c-nrm.hot')),
       ]),
       note: L(
-        'Normaler är riktningar (w = 0) och transformeras med invers-transponatet så de förblir vinkelräta även vid icke-uniform skalning. Här är M en ren rotation, så N = M<sub>3×3</sub>. Resultatet skickas vidare som varying till fragment shadern.',
-        'Normals are directions (w = 0) and are transformed with the inverse transpose so they stay perpendicular even under non-uniform scale. Here M is a pure rotation, so N = M<sub>3×3</sub>. The result is passed on as a varying to the fragment shader.',
+        'Normaler är riktningar (w = 0) och transformeras med invers-transponatet så de förblir vinkelräta. Här är M en ren rotation, så N = M<sub>3×3</sub>. Resultatet blir en varying till fragment shadern.',
+        'Normals are directions (w = 0) and are transformed with the inverse transpose so they stay perpendicular. Here M is a pure rotation, so N = M<sub>3×3</sub>. The result becomes a varying for the fragment shader.',
       ),
     },
   ];
-  const cardEls = cards.map((c) =>
-    h('div.card.vs-card', {}, [h('h4', { text: t(c.title) }), h('div.vs-eq-wrap', {}, [c.body]), h('div.vs-note', { html: t(c.note) })]),
-  );
-  // Summary chain of all spaces.
+  const panels = defs.map((d) => ms.panel(t(d.title), [h('div.stat-row', {}, d.stats), h('div.vs-eq-wrap', {}, [d.body]), h('div.vs-note', { html: t(d.note) })], { className: 'vs-panel' }));
   const chainRows = [
     { k: 'object', v: [...p, 1] },
     { k: 'world', v: st.world },
@@ -341,111 +484,63 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
     { k: 'clip', v: st.clip },
     { k: 'normal', v: [nWorld.x, nWorld.y, nWorld.z] },
   ].map((r) => h('div.vs-chain-row', {}, [h('span.vs-chain-k', { text: r.k }), h('span.vs-chain-v.mono', { text: r.v.map((x) => num(x, 3)).join(' ') })]));
-  const chain = h('div.vs-chain', {}, chainRows);
-  const side = h('div.vs-side-panel.v-scroll', {}, [...cardEls, chain]);
-  host.append(h('div.vs-data', {}, [stageHost, side]));
-  ctx.stage.attach(stageHost, view);
+  const chain = ms.panel(t(L(`Vertex ${vIdx} genom VS`, `Vertex ${vIdx} through the VS`)), [h('div.vs-chain', {}, chainRows)], { className: 'vs-chain-panel' });
+  const showPanels = stepPanels([...panels.map((el, i) => ({ el, steps: [i] })), { el: chain, steps: [0, 1, 2, 3, 4] }]);
 
-  const huds: Text[] = [
-    L('objektrymd – modellens egna axlar', 'object space – the model\'s own axes'),
-    L('världsrymd – modellen roteras på plats', 'world space – the model is rotated into place'),
-    L('kamerarymd – kameran i origo, tittar längs −Z', 'view space – camera at the origin, looking down −Z'),
-    L('clip space – frustumet blir kuben efter division', 'clip space – the frustum becomes the cube after the divide'),
-    L('normalen roteras med normalmatrisen', 'the normal is rotated by the normal matrix'),
+  const targets = [
+    { s: 0, cam: 0, nrm: 0, obj: 1, fly: 1 },
+    { s: 1, cam: 0, nrm: 0, obj: 0.35, fly: 1 },
+    { s: 2, cam: 1, nrm: 0, obj: 0, fly: 1 },
+    { s: 3, cam: 1, nrm: 0, obj: 0, fly: 1 },
+    { s: 1, cam: 0, nrm: 1, obj: 0.25, fly: 1 },
   ];
   let last = -1;
   return {
     show(step, animate) {
       const fwd = animate && step > last;
       last = step;
-      cardEls.forEach((c, i) => (c.style.display = i === step ? '' : 'none'));
+      gsap.killTweensOf(S);
+      killStageTweens(ms);
+      showPanels(step, fwd);
       chainRows.forEach((r, i) => {
         r.classList.toggle('on', i <= step);
         r.classList.toggle('cur', i === step);
       });
-      hud.innerHTML = t(huds[step]);
-      const target = {
-        rot: step >= 1 ? 1 : 0,
-        obj: step === 0 ? 1 : step === 4 ? 0.3 : 0,
-        world: step === 1 ? 1 : 0,
-        cam: step === 2 ? 1 : 0,
-        clip: step === 3 ? 1 : 0,
-        nrm: step === 4 ? 1 : 0,
-      };
-      gsap.killTweensOf(P);
-      if (fwd) {
-        gsap.to(P, { ...target, duration: dur(step === 1 ? 1.6 : 0.8), ease: 'power2.inOut' });
-        const c = cardEls[step];
-        gsap.fromTo(c, { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: dur(0.45), ease: 'power2.out' });
-        gsap.fromTo(c.querySelectorAll('.vs-col.hot span'), { opacity: 0, x: -10 }, { opacity: 1, x: 0, stagger: 0.12, delay: dur(0.3), duration: dur(0.3) });
-      } else Object.assign(P, target);
+      const tg = targets[step];
+      if (fwd && step === 2) {
+        // Show the camera in the world first, then move the world into view space.
+        gsap.to(S, { cam: 1, obj: 0, duration: dur(0.6) });
+        gsap.to(S, { s: 2, duration: dur(1.8), delay: dur(1.1), ease: 'power1.inOut' });
+      } else if (fwd) gsap.to(S, { ...tg, duration: dur(step === 3 ? 2.2 : 1.6), ease: 'power2.inOut' });
+      else Object.assign(S, tg);
+      V.observer(step, fwd);
+      ms.setLayer('normals', step === 4 ? 0.55 : 0, secs(fwd, 0.6));
+      ms.setLayer('wire', step === 3 ? 0.3 : 0.1, secs(fwd, 0.6));
+      ms.uniform('uDiffuseW', step === 4 ? 0.6 : step === 3 ? 0.8 : 1, secs(fwd, 0.6));
+      ms.uniform('uSpecW', step === 3 ? 0.25 : 1, secs(fwd, 0.6));
     },
     destroy() {
-      gsap.killTweensOf(P);
-      if (ctx.stage.isAttachedTo(view)) ctx.stage.detach();
-      disposeScene(scene);
-      tex.dispose();
+      gsap.killTweensOf(S);
+      gsap.killTweensOf(ms.camera.position);
+      ms.destroy();
     },
   };
 }
 
 /* ------------------------------------------------------------------ */
-/* Concept: object → world → view → clip as one continuous morph       */
+/* Concept: a little world – the model, a floor and two crates         */
 /* ------------------------------------------------------------------ */
 function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
   const { t } = ctx;
   const api = ctx.state.api;
-  const mesh = ctx.state.mesh;
-  const { scene, camera } = makeScene();
-  const tex = glowTexture();
-  const stars = starfield(600);
-  scene.add(stars);
-
-  // The concept world: the loaded model (as points), a floor grid and two crates.
   const MW = { t: new Vector3(0.35, 0, -0.5), ry: 0.9, s: 0.85 };
   const CAM: Camera = { eye: [1.75, 1.15, 2.3], target: [0.2, -0.2, -0.5], up: [0, 1, 0], fovY: 48, near: 0.8, far: 4.4 };
-  const camDist = new Vector3(...CAM.eye).distanceTo(new Vector3(...CAM.target));
-  const V = viewMatrix(CAM);
-  const Pm = projectionMatrix(api, CAM, ASPECT);
-  const vq = new Quaternion().setFromRotationMatrix(V);
-  const vt = new Vector3().setFromMatrixPosition(V);
-  const zMin = api === 'opengl' ? -1 : 0;
-  const BOX = 1.15; // display half-size of the NDC cube
-
-  const stride = Math.max(1, Math.floor(mesh.vertexCount / 2600));
-  const objPts: Vector3[] = [];
-  const objNrm: Vector3[] = [];
-  for (let i = 0; i < mesh.vertexCount; i += stride) {
-    objPts.push(new Vector3(mesh.positions[i * 3], mesh.positions[i * 3 + 1], mesh.positions[i * 3 + 2]));
-    objNrm.push(new Vector3(mesh.normals[i * 3], mesh.normals[i * 3 + 1], mesh.normals[i * 3 + 2]));
-  }
-  const ptsPos = new Float32Array(objPts.length * 3);
-  const ptsGeo = new BufferGeometry();
-  ptsGeo.setAttribute('position', new BufferAttribute(ptsPos, 3));
-  const pts = new Points(ptsGeo, new PointsMaterial({ size: 0.085, map: tex, color: hdr(COLORS.cyan, 1.1), transparent: true, depthWrite: false, blending: AdditiveBlending }));
-  pts.frustumCulled = false;
-  scene.add(pts);
-
-  // Line sets with world-space source points (pairs).
-  const lineSet = (src: Vector3[], color: Color, opacity: number) => {
-    const arr = new Float32Array(src.length * 3);
-    const g = new BufferGeometry();
-    g.setAttribute('position', new BufferAttribute(arr, 3));
-    const mat = new LineBasicMaterial({ color, transparent: true, opacity });
-    const ls = new LineSegments(g, mat);
-    ls.frustumCulled = false;
-    scene.add(ls);
-    return { src, arr, g, mat };
-  };
-  const gridSrc: Vector3[] = [];
-  for (let i = -3; i <= 3; i++) {
-    gridSrc.push(new Vector3(i * 0.5, -1, -2.2), new Vector3(i * 0.5, -1, 1.0));
-  }
+  const grid: Vector3[] = [];
+  for (let i = -3; i <= 3; i++) grid.push(new Vector3(i * 0.5, -1, -2.2), new Vector3(i * 0.5, -1, 1.0));
   for (let k = 0; k <= 6; k++) {
     const z = -2.2 + (k * 3.2) / 6;
-    gridSrc.push(new Vector3(-1.5, -1, z), new Vector3(1.5, -1, z));
+    grid.push(new Vector3(-1.5, -1, z), new Vector3(1.5, -1, z));
   }
-  const grid = lineSet(gridSrc, hdr(COLORS.violet, 1.1), 0.5);
   const crate = (c: Vector3, s: number) => {
     const out: Vector3[] = [];
     const cs = [-1, 1];
@@ -453,184 +548,25 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
     for (let i = 0; i < 8; i++) for (let b = 0; b < 3; b++) if (!(i & (1 << b))) out.push(corner(i), corner(i | (1 << b)));
     return out;
   };
-  const crates = lineSet([...crate(new Vector3(-1.0, -0.75, -1.4), 0.25), ...crate(new Vector3(1.05, -0.8, 0.35), 0.2)], hdr(COLORS.amber, 1.3), 0.8);
-  // Normal spikes (object space source: point + normal).
-  const spikeN = Math.min(260, objPts.length);
-  const spikeStep = Math.max(1, Math.floor(objPts.length / spikeN));
-  const spikeIdx = Array.from({ length: spikeN }, (_, i) => i * spikeStep).filter((i) => i < objPts.length);
-  const spikes = lineSet(new Array(spikeIdx.length * 2).fill(0).map(() => new Vector3()), hdr(COLORS.magenta, 1.15), 0);
-
-  // Axes gizmos built as line sets so they morph with everything else.
-  const axisSrc = (len: number) => [new Vector3(), new Vector3(len, 0, 0), new Vector3(), new Vector3(0, len, 0), new Vector3(), new Vector3(0, 0, len)];
-  const axisColors = (k: number) => {
-    const c = new Float32Array(18);
-    [COLORS.red, COLORS.green, COLORS.cyan].forEach((hex, i) => {
-      const col = hdr(hex, k);
-      c.set([col.r, col.g, col.b, col.r, col.g, col.b], i * 6);
-    });
-    return c;
-  };
-  const axisSet = (len: number) => {
-    const s = lineSet(axisSrc(len), new Color(1, 1, 1), 1);
-    s.g.setAttribute('color', new BufferAttribute(axisColors(1.8), 3));
-    s.mat.vertexColors = true;
-    return s;
-  };
-  const objAxes = axisSet(0.9);
-  const worldAxes = axisSet(1.6);
-  const camAxes = axisSet(0.45);
-  const frustum = lineSet(new Array(32).fill(0).map(() => new Vector3()), hdr(COLORS.amber, 1.6), 0.9);
-  const objTag = label('object', 'vs-tag');
-  const worldTag = label('world', 'vs-tag');
-  const camTag = label('camera', 'vs-tag');
-  const boxTagNear = label('', 'vs-tag amber');
-  const boxTagFar = label('', 'vs-tag amber');
-  const boxTagY = label('', 'vs-tag');
-  scene.add(objTag, worldTag, camTag, boxTagNear, boxTagFar, boxTagY);
-
-  // Observer camera.
-  camera.position.set(5.6, 3.3, 5.4);
-  const look = new Vector3(0.2, -0.1, 0.2);
-  camera.lookAt(look);
-
-  // Morph state: s = 0 object, 1 world, 2 view, 3 clip; fly = camera flight 0..1; nrm = normals.
-  const S = { s: 0, fly: 1, nrm: 0, cam: 0 };
-  const tmp = new Vector3();
-  const qI = new Quaternion();
-  const q = new Quaternion();
-  const startEye = new Vector3(6, 4, -3);
-
-  const modelAt = (a: number) => {
-    const m = new Matrix4().compose(MW.t.clone().multiplyScalar(a), new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), MW.ry * a), new Vector3(1, 1, 1).multiplyScalar(1 + (MW.s - 1) * a));
-    return m;
-  };
-  /** World point → display point for the current s (stages ≥ 1). */
-  const wIn = new Vector3();
-  const boxP = new Vector3();
-  const vx = new Vector3();
-  const display = (w: Vector3, out: Vector3) => {
-    const a2 = ease(clamp01(S.s - 1));
-    const a3 = ease(clamp01(S.s - 2));
-    wIn.copy(w); // `out` may alias `w`
-    q.slerpQuaternions(qI, vq, a2);
-    out.copy(wIn).applyQuaternion(q).addScaledVector(vt, a2); // world → (partial) view
-    if (a3 > 0) {
-      // Real projection with this API's conventions, then into a display cube.
-      vx.copy(wIn).applyMatrix4(V);
-      const c = [
-        Pm.elements[0] * vx.x + Pm.elements[4] * vx.y + Pm.elements[8] * vx.z + Pm.elements[12],
-        Pm.elements[1] * vx.x + Pm.elements[5] * vx.y + Pm.elements[9] * vx.z + Pm.elements[13],
-        Pm.elements[2] * vx.x + Pm.elements[6] * vx.y + Pm.elements[10] * vx.z + Pm.elements[14],
-        Pm.elements[3] * vx.x + Pm.elements[7] * vx.y + Pm.elements[11] * vx.z + Pm.elements[15],
-      ];
-      const wv = Math.max(1e-3, c[3]);
-      const nx = Math.max(-1.6, Math.min(1.6, c[0] / wv));
-      const ny = Math.max(-1.6, Math.min(1.6, c[1] / wv));
-      const nz = Math.max(zMin - 0.3, Math.min(1.3, c[2] / wv));
-      // Display: x right, y up, depth runs into the screen (−Z), box centered on the view target.
-      // The box is as deep as this API's NDC z range: 2 for OpenGL, 1 for Vulkan / D3D12.
-      const depthHalf = (BOX * (1 - zMin)) / 2;
-      boxP.set(nx * BOX, ny * BOX, -camDist + depthHalf - ((nz - zMin) / (1 - zMin)) * 2 * depthHalf);
-      out.lerp(boxP, a3);
-    }
-    out.z += camDist * a2; // keep the scene centered in front of the observer
-    return out;
-  };
-  const camPose = () => {
-    const e = startEye.clone().lerp(new Vector3(...CAM.eye), ease(S.fly));
-    const c: Camera = { ...CAM, eye: [e.x, e.y, e.z] };
-    return c;
-  };
-
-  const update = (time: number) => {
-    const a1 = ease(clamp01(S.s));
-    const M = modelAt(a1);
-    // Points.
-    for (let i = 0; i < objPts.length; i++) {
-      tmp.copy(objPts[i]).applyMatrix4(M);
-      display(tmp, tmp);
-      ptsPos[i * 3] = tmp.x;
-      ptsPos[i * 3 + 1] = tmp.y;
-      ptsPos[i * 3 + 2] = tmp.z;
-    }
-    ptsGeo.attributes.position.needsUpdate = true;
-    const upd = (set: ReturnType<typeof lineSet>, src: Vector3[], xf?: Matrix4) => {
-      for (let i = 0; i < src.length; i++) {
-        tmp.copy(src[i]);
-        if (xf) tmp.applyMatrix4(xf);
-        display(tmp, tmp);
-        set.arr[i * 3] = tmp.x;
-        set.arr[i * 3 + 1] = tmp.y;
-        set.arr[i * 3 + 2] = tmp.z;
-      }
-      set.g.attributes.position.needsUpdate = true;
-    };
-    upd(grid, grid.src);
-    upd(crates, crates.src);
-    upd(objAxes, objAxes.src, M);
-    upd(worldAxes, worldAxes.src);
-    // Camera gizmo and frustum from the (possibly flying) camera pose.
-    const pose = camPose();
-    const inv = viewMatrix(pose).invert();
-    upd(camAxes, camAxes.src, inv);
-    const cs = frustumCorners(pose, ASPECT, pose.far);
-    const fr: Vector3[] = BOX_EDGES.map((i) => cs[i]);
-    const eye = new Vector3(...pose.eye);
-    const a3 = clamp01(S.s - 2);
-    for (let i = 0; i < 4; i++) fr.push(cs[i].clone().lerp(eye, 1 - a3), cs[i]); // apex lines collapse in clip space
-    upd(frustum, fr);
-    // Normal spikes.
-    const nmat = new Matrix3().getNormalMatrix(M);
-    const sp: Vector3[] = [];
-    spikeIdx.forEach((k) => {
-      const base = objPts[k].clone().applyMatrix4(M);
-      sp.push(base, base.clone().addScaledVector(objNrm[k].clone().applyMatrix3(nmat).normalize(), 0.18));
-    });
-    upd(spikes, sp);
-    spikes.mat.opacity = S.nrm * 0.75;
-    // Visibility per stage.
-    const a2 = clamp01(S.s - 1);
-    objAxes.mat.opacity = 1 - 0.75 * clamp01(S.s - 0.5);
-    worldAxes.mat.opacity = clamp01(S.s * 2) * (1 - 0.8 * a2) * (1 - a3);
-    camAxes.mat.opacity = S.cam * (1 - a3);
-    frustum.mat.opacity = S.cam * (0.5 + 0.5 * a3);
-    grid.mat.opacity = 0.15 + 0.45 * clamp01(S.s);
-    crates.mat.opacity = clamp01(S.s * 1.5) * 0.9;
-    (pts.material as PointsMaterial).size = 0.08 + 0.012 * Math.sin(time * 3) * (1 - a3);
-    // Tags.
-    const tagAt = (lb: CSS2DObject, w: Vector3, o: number) => {
-      display(w, lb.position);
-      lb.element.style.opacity = String(o);
-    };
-    tagAt(objTag, new Vector3(0, -0.25, 0).applyMatrix4(M), 1 - 0.7 * clamp01(S.s - 0.5));
-    tagAt(worldTag, new Vector3(1.7, 0.1, 0), clamp01(S.s * 2) * (1 - a2) * (1 - a3));
-    tagAt(camTag, new Vector3(0, -0.22, 0).applyMatrix4(inv), S.cam * (1 - a3));
-    const zr = api === 'opengl' ? ['z = −1', 'z = +1'] : ['z = 0', 'z = 1'];
-    boxTagNear.element.textContent = `near · ${zr[0]}`;
-    boxTagFar.element.textContent = `far · ${zr[1]}`;
-    boxTagY.element.textContent = api === 'vulkan' ? '+y ↓ (Vulkan)' : '+y ↑';
-    tagAt(boxTagNear, cs[1], a3);
-    tagAt(boxTagFar, cs[6], a3);
-    tagAt(boxTagY, cs[7], a3 * 0.9);
-  };
-
-  const view: StageView = {
-    scene,
-    camera,
-    bloom: 1.0,
-    bloomThreshold: 0.12,
-    orbit: false,
-    onFrame: (time) => {
-      stars.tick(time);
-      // Slow observer sway so the scene feels alive.
-      const r = 6.2;
-      const ang = 0.8 + Math.sin(time * 0.18) * 0.18;
-      camera.position.set(Math.sin(ang) * r + look.x, 2.6, Math.cos(ang) * r + look.z);
-      camera.lookAt(look);
-      update(time);
+  const tri = ctx.derived.showcaseTriangle(api);
+  const vIdx = ctx.derived.triangleVertices(tri)[0];
+  const V = buildScene(
+    host,
+    ctx,
+    {
+      model: (a) =>
+        new Matrix4().compose(MW.t.clone().multiplyScalar(a), new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), MW.ry * a), new Vector3(1, 1, 1).multiplyScalar(1 + (MW.s - 1) * a)),
+      cam: CAM,
+      startEye: new Vector3(5, 3.2, -2.6),
+      props: [
+        { pts: grid, color: COLORS.violet, opacity: 0.5 },
+        { pts: [...crate(new Vector3(-1.0, -0.75, -1.4), 0.25), ...crate(new Vector3(1.05, -0.8, 0.35), 0.2)], color: COLORS.amber, opacity: 0.85 },
+      ],
     },
-  };
-  const stageHost = h('div.v-fill');
+    { shift: 0, vIdx },
+  );
+  const { ms, S } = V;
+
   const chips = ['object', 'world', 'view', 'clip'].map((k, i) =>
     h('span.vsc-chip', {}, [h('b', { text: k }), i < 3 ? h('span.vsc-m', { text: ['× uModel', '× uView', '× uProj'][i] }) : null]),
   );
@@ -645,10 +581,9 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
     h('span.vsc-sep'),
     h('span.vsc-node.mesh', { text: api === 'd3d12' ? 'Amplification → Mesh' : api === 'vulkan' ? 'Task → Mesh (VK_EXT_mesh_shader)' : 'Task → Mesh (GL_NV_mesh_shader)' }),
   ]);
-  const hud = h('div.vsc-hud', {}, [h('div.vsc-chips', {}, chips), optional]);
-  const caption = h('div.vsc-caption');
-  host.append(stageHost, hud, caption);
-  ctx.stage.attach(stageHost, view);
+  const hud = ms.panel(t(L('Rymderna', 'The spaces')), [h('div.vsc-chips', {}, chips), optional], { side: 'top', className: 'vsc-hud' });
+  const capPanel = ms.panel(t(L('Vad händer', 'What happens')), [h('p.vsc-cap')], { side: 'bottom' });
+  const cap = capPanel.querySelector('.vsc-cap')!;
 
   const captions: Text[] = [
     L('Objektrymd: modellen kring sitt eget origo, med sina egna axlar.', 'Object space: the model around its own origin, with its own axes.'),
@@ -660,45 +595,47 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
     ),
     L(
       'Normalerna följer med modellens rotation. Efter VS kan valfria steg ta vid: tessellering och geometry shader – eller mesh shaders som ersätter hela IA + VS.',
-      'The normals follow the model\'s rotation. After the VS optional stages may run: tessellation and geometry shader – or mesh shaders, which replace IA + VS altogether.',
+      "The normals follow the model's rotation. After the VS optional stages may run: tessellation and geometry shader – or mesh shaders, which replace IA + VS altogether.",
     ),
   ];
   const targets = [
-    { s: 0, fly: 0, nrm: 0, cam: 0 },
-    { s: 1, fly: 0, nrm: 0, cam: 0 },
-    { s: 2, fly: 1, nrm: 0, cam: 1 },
-    { s: 3, fly: 1, nrm: 0, cam: 1 },
-    { s: 1, fly: 1, nrm: 1, cam: 1 },
+    { s: 0, fly: 0, nrm: 0, cam: 0, obj: 1 },
+    { s: 1, fly: 0, nrm: 0, cam: 0, obj: 0.35 },
+    { s: 2, fly: 1, nrm: 0, cam: 1, obj: 0 },
+    { s: 3, fly: 1, nrm: 0, cam: 1, obj: 0 },
+    { s: 1, fly: 1, nrm: 1, cam: 0, obj: 0.25 },
   ];
   let last = -1;
   return {
     show(step, animate) {
       const fwd = animate && step > last;
       last = step;
-      caption.innerHTML = t(captions[step]);
+      cap.innerHTML = t(captions[step]);
+      if (fwd) gsap.fromTo(cap, { opacity: 0, y: 8 }, { opacity: 1, y: 0, duration: dur(0.4) });
       chips.forEach((c, i) => {
         c.classList.toggle('on', step === 4 ? i === 1 : i <= step);
         c.classList.toggle('cur', step === 4 ? i === 1 : i === step);
       });
       hud.dataset.step = String(step);
       gsap.killTweensOf(S);
+      killStageTweens(ms);
       const tg = targets[step];
       if (fwd && step === 2) {
-        // Fly the camera in first, then transform the world into view space.
         S.fly = 0;
-        gsap.to(S, { cam: 1, duration: dur(0.4) });
+        gsap.to(S, { cam: 1, obj: 0, duration: dur(0.4) });
         gsap.to(S, { fly: 1, duration: dur(1.6), ease: 'power2.inOut' });
         gsap.to(S, { s: 2, duration: dur(1.8), delay: dur(1.7), ease: 'power1.inOut' });
-      } else if (fwd) {
-        gsap.to(S, { ...tg, duration: dur(step === 3 ? 2.2 : 1.6), ease: 'power1.inOut' });
-      } else Object.assign(S, tg);
-      if (fwd) gsap.fromTo(caption, { opacity: 0, y: 10 }, { opacity: 1, y: 0, duration: dur(0.4) });
+      } else if (fwd) gsap.to(S, { ...tg, duration: dur(step === 3 ? 2.2 : 1.6), ease: 'power1.inOut' });
+      else Object.assign(S, tg);
+      V.observer(step, fwd);
+      ms.setLayer('normals', step === 4 ? 0.6 : 0, secs(fwd, 0.6));
+      ms.setLayer('wire', step === 3 ? 0.3 : 0.12, secs(fwd, 0.6));
+      ms.uniform('uSpecW', step === 3 ? 0.25 : 1, secs(fwd, 0.6));
     },
     destroy() {
       gsap.killTweensOf(S);
-      if (ctx.stage.isAttachedTo(view)) ctx.stage.detach();
-      disposeScene(scene);
-      tex.dispose();
+      gsap.killTweensOf(ms.camera.position);
+      ms.destroy();
     },
   };
 }
