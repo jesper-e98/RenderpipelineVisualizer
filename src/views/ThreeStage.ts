@@ -15,6 +15,8 @@ export interface StageView {
   bloomThreshold?: number;
   /** Let the user orbit the camera by dragging. */
   orbit?: boolean;
+  /** Point the orbit controls circle around (default: the origin). */
+  orbitTarget?: [number, number, number];
   /** Called every frame before rendering. `t` = seconds since attach. */
   onFrame?: (t: number, dt: number) => void;
   /** Called when the host is resized. */
@@ -95,6 +97,7 @@ export class ThreeStage {
       controls.enablePan = false;
       controls.minDistance = 1.5;
       controls.maxDistance = 12;
+      if (view.orbitTarget) controls.target.set(...view.orbitTarget);
     }
     this.current = { host, view, ro, controls, t: 0 };
     this.renderPass!.scene = view.scene;

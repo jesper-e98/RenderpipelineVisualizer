@@ -26,3 +26,12 @@
 @media (max-width: 900px) {
   .fs-root { grid-template-columns: 1fr; grid-template-rows: minmax(220px, 1fr) auto; }
 }
+
+/* 3D version: panels over the model view */
+.fs-zoom { position: relative; height: 200px; margin: 0 -4px; }
+.ms-body .stat-row { margin-bottom: 6px; }
+.fs-eqs .fs-eq:nth-child(1) span { color: #ff6b7d; }
+.fs-eqs .fs-eq:nth-child(2) span { color: var(--green); }
+.fs-eqs .fs-eq:nth-child(3) span { color: #6fa8ff; }
+.ms-body .fs-swatch { height: 26px; margin: 6px 0; }
+.fs-capt { margin: 0; color: var(--muted); font-size: 13.5px; line-height: 1.45; }

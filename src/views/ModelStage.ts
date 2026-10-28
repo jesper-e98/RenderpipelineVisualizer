@@ -257,6 +257,7 @@ export function createModelStage(host: HTMLElement, ctx: SlideContext, opts: Mod
     bloom: opts.bloom ?? 0.5,
     bloomThreshold: opts.bloomThreshold ?? 0.85,
     orbit: opts.orbit ?? true,
+    orbitTarget: target,
     onResize: (w, hh) => {
       if (shift) {
         camera.setViewOffset(w, hh, -shift * w, 0, w, hh);
@@ -328,8 +329,12 @@ export function createModelStage(host: HTMLElement, ctx: SlideContext, opts: Mod
   pivot.add(marks);
   const clearMarks = () => {
     marks.children.slice().forEach((c) => {
+      c.traverse((o) => {
+        (o as Mesh).geometry?.dispose?.();
+        // CSS2D labels only leave the DOM when they themselves are removed.
+        (o as Object3D & { element?: HTMLElement }).element?.remove();
+      });
       c.removeFromParent();
-      c.traverse((o) => (o as Mesh).geometry?.dispose?.());
     });
   };
 

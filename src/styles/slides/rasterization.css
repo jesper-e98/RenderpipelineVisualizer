@@ -27,3 +27,14 @@
 @media (max-width: 900px) {
   .rz-root { grid-template-columns: 1fr; grid-template-rows: minmax(220px, 1fr) auto; }
 }
+
+/* 3D version: panels over the model view */
+.rz-zoom { position: relative; height: 210px; margin: 0 -4px; }
+.rz-zoom.hoverable canvas { cursor: crosshair; }
+.ms-body .rz-table { margin: 6px 0; }
+.ms-body .stat-row { margin-bottom: 6px; }
+.rz-capt { margin: 0; color: var(--muted); font-size: 13.5px; line-height: 1.45; }
+.rz-msaa { display: block; width: 240px; height: 120px; margin: 0 auto; }
+.three-label.green { color: var(--green); border-color: rgba(92, 240, 143, 0.5); }
+.three-label.red { color: var(--red); border-color: rgba(255, 90, 110, 0.5); }
+.three-label.violet { color: var(--violet); border-color: rgba(155, 123, 255, 0.5); }

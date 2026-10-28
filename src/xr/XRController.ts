@@ -226,7 +226,8 @@ export class XRController {
     const s = this.store.state;
     const slide = document.querySelector('.slide:not(.leaving)');
     const def = this.engine.slides[this.engine.index];
-    const facts = Array.from(slide?.querySelectorAll('.ms-panel .stat') ?? [])
+    const facts = Array.from(slide?.querySelectorAll<HTMLElement>('.ms-panel:not(.collapsed) .stat') ?? [])
+      .filter((st) => st.offsetParent !== null)
       .slice(0, 3)
       .map((st) => `${st.querySelector('.v')?.textContent ?? ''}  ${st.querySelector('.k')?.textContent ?? ''}`.trim());
     return {
