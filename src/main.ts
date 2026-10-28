@@ -7,7 +7,7 @@ import { Derived } from './core/derived';
 import { SlideEngine } from './core/SlideEngine';
 import { API_LIST, loadPref, Store, type ApiId, type Lang, type Mode } from './core/state';
 import { BUILTINS, builtinMesh, type BuiltinId } from './model/builtins';
-import { ACCEPTED_EXTENSIONS, loadModelFile } from './model/loadModel';
+import { ACCEPTED_EXTENSIONS, BlendFileError, loadModelFile } from './model/loadModel';
 import { SLIDES } from './slides';
 import { GROUP_LABEL } from './slides/standard';
 import { ThreeStage } from './views/ThreeStage';
@@ -214,7 +214,8 @@ async function loadFile(file: File) {
     showToast(`${file.name} · ${mesh.vertexCount.toLocaleString()} ${t(UI.vertices)} · ${mesh.triangleCount.toLocaleString()} ${t(UI.triangles)}`);
   } catch (err) {
     console.error(err);
-    showToast(`${t(UI.loadError)}: ${(err as Error).message}`, 'err');
+    if (err instanceof BlendFileError) showToast(t(UI.blendHint), 'err');
+    else showToast(`${t(UI.loadError)}: ${(err as Error).message}`, 'err');
   }
 }
 

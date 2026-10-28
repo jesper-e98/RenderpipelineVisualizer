@@ -7,6 +7,14 @@ import type { MeshData } from './types';
 
 export const ACCEPTED_EXTENSIONS = ['.obj', '.gltf', '.glb', '.stl'];
 
+/** Blender's native format can't be read in a browser; the UI explains how to export instead. */
+export class BlendFileError extends Error {
+  constructor() {
+    super('.blend files are not supported – export to glTF Binary (.glb) from Blender');
+    this.name = 'BlendFileError';
+  }
+}
+
 function collectMeshes(root: Object3D): { geometry: BufferGeometry; matrix: Matrix4 }[] {
   root.updateMatrixWorld(true);
   const parts: { geometry: BufferGeometry; matrix: Matrix4 }[] = [];
@@ -79,6 +87,7 @@ export async function parseModel(fileName: string, buffer: ArrayBuffer): Promise
     });
   }
 
+  if (ext === '.blend') throw new BlendFileError();
   throw new Error(`Unsupported format "${ext}" (use ${ACCEPTED_EXTENSIONS.join(', ')})`);
 }
 

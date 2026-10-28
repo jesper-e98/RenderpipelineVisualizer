@@ -12,6 +12,8 @@ for OpenGL, Vulkan and DirectX 12. UI in Swedish and English.*
 
 - **Ladda in ett eget objekt** – dra och släpp en `.obj`, `.glb`, `.gltf` (med inbäddade buffertar) eller `.stl`,
   eller välj ett inbyggt (Utah-tekanna, kub, sfär, torusknut, ikosaeder, en enda triangel).
+  Blender-filer (`.blend`) går inte att läsa i webbläsaren – exportera dem från Blender via
+  **File → Export → glTF 2.0** och välj **glTF Binary (.glb)**.
 - **Slides med animationer** – bläddra fram och tillbaka med ← →, mellanslag, svep, eller klicka i
   pipeline-kartan längst ner. Varje slide har delsteg som byggs upp ett i taget.
 - **Tre API:er** – byt mellan OpenGL, Vulkan och DirectX 12 (tangent 1/2/3). Kod, begrepp och ansvarsfördelning
