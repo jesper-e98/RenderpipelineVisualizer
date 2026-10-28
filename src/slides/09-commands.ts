@@ -366,20 +366,20 @@ function cmdScene(host: HTMLElement, ctx: SlideContext, concept: boolean, cmds: 
   ms.overlay.classList.add('cmd-ms');
 
   // CPU → command buffer → queue, in a row under the model (the model itself is the GPU's output).
-  const y = -1.18;
-  const z = 0.35;
+  const y = -1.0;
+  const z = 0.05;
   const gl = api === 'opengl';
   const bufName = (hidden: boolean) =>
     hidden ? t(L('drivrutinens buffert (dold)', 'driver buffer (hidden)')) : concept ? t(L('kommandobuffert', 'command buffer')) : api === 'vulkan' ? 'VkCommandBuffer' : api === 'd3d12' ? 'ID3D12GraphicsCommandList' : 'VkCommandBuffer / CommandList';
-  const cpu = ms.box('CPU', [-1.5, y, z], [0.42, 0.26, 0.22], COLORS.cyan);
-  const buf = ms.box(bufName(false), [-0.62, y, z], [1.0, 0.3, 0.22], API_NUM[api]);
-  const queue = ms.box(api === 'd3d12' && !concept ? 'ID3D12CommandQueue' : api === 'vulkan' && !concept ? 'VkQueue' : t(L('kö', 'queue')), [0.38, y, z], [0.5, 0.26, 0.22], COLORS.violet);
+  const cpu = ms.box('CPU', [-1.08, y, z], [0.34, 0.22, 0.2], COLORS.cyan);
+  const buf = ms.box(bufName(false), [-0.32, y, z], [0.95, 0.26, 0.2], API_NUM[api]);
+  const queue = ms.box(api === 'd3d12' && !concept ? 'ID3D12CommandQueue' : api === 'vulkan' && !concept ? 'VkQueue' : t(L('kö', 'queue')), [0.6, y, z], [0.42, 0.22, 0.2], COLORS.violet);
   const bufLabel = buf.children[2] as CSS2DObject;
   const bufEdges = (buf.children[0] as LineSegments).material as LineBasicMaterial;
   const bufFill = (buf.children[1] as Mesh).material as MeshBasicMaterial;
   const boxes = [cpu, buf, queue];
   const callout = label('', 'cmd-callout');
-  callout.position.set(-0.55, y - 0.32, z);
+  callout.position.set(-0.3, -1.32, 0.3);
   ms.scene.add(callout);
   const say = (s: string, kind?: Kind) => {
     callout.element.textContent = s;
@@ -397,10 +397,10 @@ function cmdScene(host: HTMLElement, ctx: SlideContext, concept: boolean, cmds: 
   const recIdx = cmds.map((c, i) => (RECORDED.includes(c.kind) ? i : -1)).filter((i) => i >= 0);
   const slotOf = (j: number): Vector3 => {
     const cols = Math.ceil(recIdx.length / 2);
-    return new Vector3(-0.62 - 0.42 + ((j % cols) + 0.5) * (0.84 / cols), y + (j < cols ? 0.06 : -0.06), z);
+    return new Vector3(-0.32 - 0.42 + ((j % cols) + 0.5) * (0.84 / cols), y + (j < cols ? 0.05 : -0.05), z);
   };
-  const cpuPos = new Vector3(-1.5, y, z);
-  const qPos = new Vector3(0.38, y, z);
+  const cpuPos = new Vector3(-1.08, y, z);
+  const qPos = new Vector3(0.6, y, z);
   const gpuPos = new Vector3(0, 0, 0);
 
   let step = 0;
@@ -423,7 +423,12 @@ function cmdScene(host: HTMLElement, ctx: SlideContext, concept: boolean, cmds: 
       presentedK = k;
       ms.pivot.rotation.y = SHOWCASE_ROT_Y + (k % 64) * 0.098;
       hooks.presented?.(k);
-      say(t(L(`GPU klar med F${k} → visas · CPU spelar in F${k + FIF}`, `GPU done with F${k} → shown · CPU records F${k + FIF}`)), 'submit');
+      say(
+        concept
+          ? t(L(`F${k} visas · CPU: F${k + FIF}`, `F${k} shown · CPU: F${k + FIF}`))
+          : t(L(`GPU klar med F${k} → visas · CPU spelar in F${k + FIF}`, `GPU done with F${k} → shown · CPU records F${k + FIF}`)),
+        'submit',
+      );
     }
   });
 
@@ -540,6 +545,7 @@ function cmdScene(host: HTMLElement, ctx: SlideContext, concept: boolean, cmds: 
     ms,
     show(s: number, _animate: boolean) {
       step = s;
+      ms.overlay.dataset.step = String(s);
       stopLoop();
       resetPackets();
       ms.setLayer('points', 0, 0);
@@ -554,10 +560,11 @@ function cmdScene(host: HTMLElement, ctx: SlideContext, concept: boolean, cmds: 
         ms.setMode('shaded', 0, 0);
         ms.drawTriangles(N, 0);
         ms.highlightTriangle(null);
-        callout.position.set(-0.2, -1.12, 0.35);
+        if (concept) callout.position.set(-1.4, 0.15, 0);
+        else callout.position.set(-0.2, 1.0, 0);
         return;
       }
-      callout.position.set(recSteps ? -0.55 : -0.2, recSteps ? y - 0.32 : -1.12, z);
+      callout.position.set(-0.3, -1.32, 0.3);
       ms.setMode('shaded', 0, 0);
       ms.drawTriangles(N, 0);
       if (!concept && s === 0) startLoop(execute);
@@ -739,7 +746,7 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
   // Each step gets the stream that fits it: GL for step 1, explicit for the others.
   const scenes = [cmdScene(host, ctx, true, cmds, {})];
   const ms = scenes[0].ms;
-  ms.panel(t(L('Vad händer', 'What happens')), [caption], { side: 'bottom', className: 'cmd-cap' });
+  ms.panel(t(L('Vad händer', 'What happens')), [caption], { side: 'top', className: 'cmd-cap' });
   const tlHost = h('div.cmd-tl.small');
   const tlPanel = ms.panel(t(L('CPU · kö · GPU', 'CPU · queue · GPU')), [tlHost], { side: 'bottom', className: 'cmd-tlpanel' });
   const lanes: [string, string, string] = ['CPU', t(L('kö', 'queue')), 'GPU'];

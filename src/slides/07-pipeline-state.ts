@@ -292,9 +292,7 @@ function stateScene(host: HTMLElement, ctx: SlideContext, concept: boolean, hook
   let cur: Look = { ...GOOD };
   const look = (l: Partial<Look>, s = 0.3) => {
     cur = { ...cur, ...l };
-    ms.state({ cull: cur.cull, depthTest: cur.depth, wireframe: cur.wire, blend: cur.blend });
-    // ms.state() eases the back-face tint in; set it at once so the effect is there immediately.
-    ms.material.uniforms.uBackTint.value = cur.cull === 'none' ? 0.55 : 0;
+    ms.state({ cull: cur.cull, depthTest: cur.depth, wireframe: cur.wire, blend: cur.blend }, Math.min(s, 0.15));
     const o = step === 1 && cur.cull === 'none' ? 0.3 : 0;
     if (s > 0) ms.tween(xrayMat, { opacity: o, duration: dur(s) });
     else xrayMat.opacity = o;
