@@ -98,6 +98,7 @@ uniform float uSweep;
 uniform int uSweepMode;
 uniform vec3 uSweepColor;
 uniform float uBackTint;
+uniform float uFlipFacing;
 uniform float uTime;
 varying vec3 vNormal;
 varying vec3 vObjPos;
@@ -143,12 +144,14 @@ vec3 modeColor(int m, vec3 n) {
 void main() {
   if (vTri >= uDrawTris) discard;
   vec3 n = normalize(vNormal);
-  if (!gl_FrontFacing) n = -n;
+  // three.js flips the winding for BackSide materials, so gl_FrontFacing is inverted there.
+  bool front = gl_FrontFacing != (uFlipFacing > 0.5);
+  if (!front) n = -n;
   vec3 c = mix(shadeBP(n), modeColor(uMode, n), uModeMix);
   if (vObjPos.y > uSweep) c = modeColor(uSweepMode, n);
   c += uSweepColor * smoothstep(0.035, 0.0, abs(vObjPos.y - uSweep)) * 1.6;
   if (abs(vTri - uHighlightTri) < 0.5) c = mix(c, uHighlightColor, 0.55 + 0.3 * sin(uTime * 6.0));
-  if (!gl_FrontFacing) c = mix(c, vec3(1.0, 0.35, 0.43), uBackTint);
+  if (!front) c = mix(c, vec3(1.0, 0.35, 0.43), uBackTint);
   gl_FragColor = vec4(c, uOpacity);
 }
 `;
@@ -171,6 +174,7 @@ export type PipelineMaterial = ShaderMaterial & {
     uSweepMode: { value: number };
     uSweepColor: { value: Color };
     uBackTint: { value: number };
+    uFlipFacing: { value: number };
     uExplode: { value: number };
     uTime: { value: number };
   };
@@ -200,6 +204,7 @@ export function pipelineMaterial(): PipelineMaterial {
       uSweepMode: { value: VIEW_MODE.ghost },
       uSweepColor: { value: new Color(0x000000) },
       uBackTint: { value: 0 },
+      uFlipFacing: { value: 0 },
       uExplode: { value: 0 },
       uTime: { value: 0 },
     },

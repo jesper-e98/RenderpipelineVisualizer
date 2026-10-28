@@ -102,7 +102,8 @@ export interface ModelStage {
   setMode(mode: ViewMode, mix?: number, seconds?: number): void;
   /** Sweep a glowing plane bottom→top; below it the new mode, above it `from`. */
   sweep(to: ViewMode, from?: ViewMode, seconds?: number): void;
-  state(s: PipelineState): void;
+  /** Set pipeline state live. `seconds` = fade time for tint/opacity (0 snaps). */
+  state(s: PipelineState, seconds?: number): void;
   explode(amount: number, seconds?: number): void;
   /** Draw only the first `count` triangles (index order). */
   drawTriangles(count: number, seconds?: number): void;
@@ -366,9 +367,12 @@ export function createModelStage(host: HTMLElement, ctx: SlideContext, opts: Mod
       u.value = -1.1;
       tween(u, { value: 1.1, duration: dur(seconds), ease: 'power1.inOut', onComplete: () => (u.value = 100) });
     },
-    state(s) {
-      if (s.cull) material.side = s.cull === 'back' ? FrontSide : s.cull === 'front' ? BackSide : DoubleSide;
-      if (s.cull) uniform('uBackTint', s.cull === 'none' ? 0.55 : 0, 0.3);
+    state(s, seconds = 0.35) {
+      if (s.cull) {
+        material.side = s.cull === 'back' ? FrontSide : s.cull === 'front' ? BackSide : DoubleSide;
+        material.uniforms.uFlipFacing.value = s.cull === 'front' ? 1 : 0;
+        uniform('uBackTint', s.cull === 'back' ? 0 : 0.55, seconds);
+      }
       if (s.depthTest !== undefined) {
         material.depthTest = s.depthTest;
         material.depthWrite = s.depthTest;
@@ -378,7 +382,7 @@ export function createModelStage(host: HTMLElement, ctx: SlideContext, opts: Mod
         blendOn = s.blend !== false;
         material.transparent = blendOn;
         material.depthWrite = !blendOn && material.depthTest;
-        uniform('uOpacity', blendOn ? (s.blend as number) : 1, 0.4);
+        uniform('uOpacity', blendOn ? (s.blend as number) : 1, seconds);
       }
       material.needsUpdate = true;
     },
