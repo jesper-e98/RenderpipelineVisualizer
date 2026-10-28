@@ -1,0 +1,86 @@
+/* ---------- 07 Pipeline state – data view ---------- */
+.ps-data { position: absolute; inset: 0; display: grid; grid-template-columns: minmax(0, 1fr) 210px; gap: 10px; padding: 12px 14px; }
+.ps-tablecard { display: flex; flex-direction: column; min-height: 0; padding: 8px 12px; }
+.ps-tablecard h4 { margin-bottom: 4px; font-size: 11px; }
+.ps-scroll { flex: 1; min-height: 0; }
+.ps-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.ps-table th { position: sticky; top: 0; z-index: 1; text-align: left; color: var(--dim); font-weight: 600; font-size: 11px; padding: 3px 10px 4px 0; border-bottom: 1px solid var(--line); background: rgba(10, 12, 28, 0.96); white-space: nowrap; }
+.ps-table th.c3 { color: var(--api); font-family: var(--mono); }
+.ps-table td { padding: 2px 10px 2px 0; border-bottom: 1px solid rgba(140, 160, 255, 0.07); vertical-align: middle; }
+.ps-table tr { transition: opacity 0.4s; }
+.ps-table tr.dim { opacity: 0.38; }
+.ps-what { color: var(--muted); white-space: nowrap; }
+.ps-val { color: var(--text); white-space: nowrap; font-weight: 600; }
+.ps-spell { font-family: var(--mono); font-size: 11px; color: color-mix(in srgb, var(--api) 55%, #fff); overflow-wrap: anywhere; }
+.ps-kind { display: inline-block; font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; padding: 1px 7px; border-radius: 99px; border: 1px solid; white-space: nowrap; }
+.ps-kind.k-baked { color: var(--violet); border-color: rgba(155, 123, 255, 0.55); background: rgba(155, 123, 255, 0.12); box-shadow: 0 0 8px rgba(155, 123, 255, 0.3); }
+.ps-kind.k-dynamic, .ps-kind.k-cmd { color: var(--green); border-color: rgba(92, 240, 143, 0.55); background: rgba(92, 240, 143, 0.1); box-shadow: 0 0 8px rgba(92, 240, 143, 0.35); }
+.ps-kind.k-global { color: var(--amber); border-color: rgba(255, 181, 71, 0.55); background: rgba(255, 181, 71, 0.1); }
+.ps-kind.k-fb { color: var(--cyan); border-color: rgba(56, 225, 255, 0.5); background: rgba(56, 225, 255, 0.08); }
+.ps-data[data-step='3'] tr[data-kind='dynamic'] .ps-kind, .ps-data[data-step='3'] tr[data-kind='cmd'] .ps-kind { animation: ps-pulse 1.2s ease-in-out infinite alternate; }
+@keyframes ps-pulse { to { box-shadow: 0 0 16px rgba(92, 240, 143, 0.8); } }
+.ps-side { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.ps-side .stat { flex: none; padding: 6px 10px; }
+.ps-side .stat .v { font-size: 20px; }
+.ps-side .stat .k { font-size: 10px; }
+.ps-notecard { flex: 1; min-height: 0; overflow: auto; padding: 8px 10px; }
+.ps-notecard h4 { font-size: 10.5px; margin-bottom: 4px; }
+.ps-note { margin: 0; font-size: 12.5px; color: var(--muted); }
+.ps-note code { color: var(--cyan); }
+
+/* ---------- 07 Pipeline state – concept view ---------- */
+.psc-root { position: absolute; left: 12px; right: 12px; top: 12px; bottom: 74px; display: grid; grid-template-columns: 1fr 1.15fr; gap: 12px; }
+.psc-pane { position: relative; display: flex; flex-direction: column; min-height: 0; border: 1px solid var(--line); border-radius: 12px; background: rgba(8, 10, 24, 0.55); padding: 10px 12px; overflow: hidden; transition: border-color 0.4s, box-shadow 0.4s, opacity 0.4s; }
+.psc-pane.active { border-color: color-mix(in srgb, var(--api) 60%, transparent); box-shadow: 0 0 26px color-mix(in srgb, var(--api) 22%, transparent), inset 0 0 30px color-mix(in srgb, var(--api) 6%, transparent); }
+.psc-root[data-step='1'] .psc-pane.pso, .psc-root[data-step='2'] .psc-pane.gl, .psc-root[data-step='3'] .psc-pane.gl { opacity: 0.45; }
+.psc-head { display: flex; gap: 8px; align-items: baseline; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+.psc-head b { font-size: 13px; color: #fff; }
+.psc-pane.mine .psc-head b { color: var(--api); text-shadow: 0 0 10px var(--api); }
+.psc-switches { display: grid; gap: 3px; }
+.psc-sw { display: grid; grid-template-columns: 30px 82px minmax(0, 1fr); align-items: center; gap: 8px; font-size: 11.5px; }
+.psc-toggle { position: relative; width: 30px; height: 16px; border-radius: 99px; background: rgba(255, 255, 255, 0.07); border: 1px solid var(--line-strong); transition: background 0.3s, border-color 0.3s, box-shadow 0.3s; }
+.psc-knob { position: absolute; left: 1px; top: 1px; width: 12px; height: 12px; border-radius: 50%; background: #6b7399; transition: background 0.3s, box-shadow 0.3s; }
+.psc-sw.on .psc-toggle { background: rgba(92, 240, 143, 0.22); border-color: var(--green); box-shadow: 0 0 10px rgba(92, 240, 143, 0.45); }
+.psc-sw.on .psc-knob { background: var(--green); box-shadow: 0 0 8px var(--green); }
+.psc-sw.set:not(.on) .psc-toggle { border-color: rgba(255, 90, 110, 0.7); }
+.psc-sw.set:not(.on) .psc-knob { background: var(--red); box-shadow: 0 0 8px var(--red); }
+.psc-name { font-family: var(--mono); color: var(--text); }
+.psc-call { color: var(--amber); font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0; }
+.psc-draw { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; font-size: 11px; opacity: 0; transition: opacity 0.4s; }
+.psc-root:not([data-step='0']) .psc-draw, .psc-root:not([data-step='0']) .psc-frames { opacity: 1; }
+.psc-drawcall { font-family: var(--mono); padding: 2px 8px; border-radius: 6px; border: 1px solid var(--api-opengl); color: #fff; background: rgba(90, 169, 230, 0.18); box-shadow: 0 0 10px rgba(90, 169, 230, 0.4); }
+.psc-validate { color: var(--muted); animation: psc-validate 3s linear infinite; }
+.psc-warn { color: var(--red); font-weight: 700; text-shadow: 0 0 10px var(--red); animation: psc-warn 3s linear infinite; }
+@keyframes psc-validate { 0%, 55% { opacity: 1; } 60%, 100% { opacity: 0.3; } }
+@keyframes psc-warn { 0%, 56% { opacity: 0; } 60%, 85% { opacity: 1; } 100% { opacity: 0; } }
+.psc-frames { display: flex; align-items: flex-end; gap: 2px; height: 28px; margin-top: 6px; opacity: 0; transition: opacity 0.4s; }
+.psc-frames-l { font-size: 9.5px; color: var(--dim); align-self: center; margin-right: 4px; white-space: nowrap; }
+.psc-bar { flex: 1; background: rgba(56, 225, 255, 0.35); border-radius: 2px 2px 0 0; }
+.psc-bar.spike { background: var(--red); box-shadow: 0 0 10px var(--red); transform-origin: bottom; animation: psc-spike 3s linear infinite; }
+@keyframes psc-spike { 0%, 56% { transform: scaleY(0.28); } 60%, 85% { transform: scaleY(1); } 100% { transform: scaleY(0.28); } }
+.psc-scan { position: absolute; left: 8px; right: 8px; top: 34px; height: 2px; background: var(--api-opengl); box-shadow: 0 0 12px var(--api-opengl), 0 0 2px #fff; opacity: 0; pointer-events: none; }
+.psc-root[data-step='1'] .psc-scan { animation: psc-scan 3s linear infinite; }
+@keyframes psc-scan { 0% { opacity: 0; transform: translateY(0); } 5% { opacity: 1; } 52% { opacity: 1; transform: translateY(160px); } 56%, 100% { opacity: 0; transform: translateY(160px); } }
+.psc-area { position: relative; flex: 1; min-height: 0; }
+.psc-chip { position: absolute; left: 0; top: 0; z-index: 2; padding: 4px 8px; font-family: var(--mono); font-size: 11px; border-radius: 7px; border: 1px solid color-mix(in srgb, var(--api) 50%, transparent); background: color-mix(in srgb, var(--api) 12%, rgba(5, 6, 13, 0.92)); color: #fff; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; box-shadow: 0 0 10px color-mix(in srgb, var(--api) 25%, transparent); }
+.psc-block { position: absolute; left: 0; top: 0; border-radius: 14px; border: 1px dashed var(--line-strong); opacity: 0; overflow: hidden; transition: opacity 0.5s, box-shadow 0.6s, border-color 0.5s, background 0.5s; }
+.psc-block.sealed { opacity: 1; border: 1.5px solid var(--api); background: linear-gradient(135deg, color-mix(in srgb, var(--api) 20%, rgba(8, 10, 24, 0.92)), rgba(8, 10, 24, 0.92) 70%); box-shadow: 0 0 32px color-mix(in srgb, var(--api) 45%, transparent), inset 0 0 30px color-mix(in srgb, var(--api) 18%, transparent); }
+.psc-block-name { position: absolute; left: 10px; top: 6px; font-family: var(--mono); font-weight: 800; font-size: 12px; color: var(--api); text-shadow: 0 0 10px var(--api); }
+.psc-lock { position: absolute; right: 10px; top: 6px; font-size: 9.5px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text); padding: 1px 7px; border-radius: 99px; border: 1px solid var(--api); opacity: 0; transition: opacity 0.4s 0.6s; }
+.psc-block.sealed .psc-lock { opacity: 1; }
+.psc-shine { position: absolute; top: 0; bottom: 0; left: -50%; width: 40%; background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.16), transparent); transform: skewX(-20deg); pointer-events: none; }
+.psc-block.sealed .psc-shine { animation: psc-shine 3.4s ease-in-out infinite; }
+@keyframes psc-shine { 0% { left: -50%; } 50%, 100% { left: 130%; } }
+.psc-dyn { position: absolute; left: 0; top: 0; display: flex; gap: 6px; align-items: center; padding: 3px 10px; border-radius: 99px; border: 1px solid var(--green); color: var(--green); font-family: var(--mono); font-size: 11px; background: rgba(92, 240, 143, 0.1); opacity: 0; }
+.psc-dyn-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 8px var(--green); animation: psc-blink 0.9s ease-in-out infinite alternate; }
+@keyframes psc-blink { to { opacity: 0.25; } }
+.psc-cache { position: absolute; left: 0; top: 0; display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 11px; color: var(--cyan); opacity: 0; transition: opacity 0.4s 0.4s; }
+.psc-disk { width: 24px; height: 30px; border-radius: 50% / 20%; border: 1.5px solid var(--cyan); background: rgba(56, 225, 255, 0.12); box-shadow: 0 0 12px rgba(56, 225, 255, 0.5); }
+.psc-ghost { position: absolute; left: 0; top: 0; z-index: 3; border-radius: 10px; border: 1px solid var(--api); background: color-mix(in srgb, var(--api) 25%, transparent); box-shadow: 0 0 20px var(--api); opacity: 0; pointer-events: none; }
+.psc-bind { position: absolute; left: 0; top: 0; font-family: var(--mono); font-size: 11px; padding: 3px 10px; border-radius: 6px; border: 1px solid color-mix(in srgb, var(--api) 60%, transparent); color: var(--text); opacity: 0; transition: opacity 0.4s; }
+.psc-root[data-step='2'] .psc-bind, .psc-root[data-step='3'] .psc-bind { animation: psc-bind 1.1s ease-in-out infinite; }
+@keyframes psc-bind { 50% { box-shadow: 0 0 14px color-mix(in srgb, var(--api) 70%, transparent); border-color: var(--api); } }
+@media (prefers-reduced-motion: reduce) {
+  .psc-validate, .psc-warn, .psc-bar.spike, .psc-scan, .psc-shine, .psc-dyn-dot, .psc-bind, .ps-kind { animation: none !important; }
+  .psc-root[data-step='1'] .psc-warn { opacity: 1; }
+}
