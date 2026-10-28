@@ -260,7 +260,7 @@ function buildScene(host: HTMLElement, ctx: SlideContext, concept: boolean): Cli
   const api = ctx.state.api;
   const mesh = ctx.state.mesh;
   const cam: Camera = concept
-    ? { eye: [0.8, 0.32, 1.45], target: [0.12, 0, 0], up: [0, 1, 0], fovY: 40, near: 0.75, far: 2.25 }
+    ? { eye: [0.8, 0.32, 1.45], target: [0.12, 0, 0], up: [0, 1, 0], fovY: 38, near: 1.0, far: 2.0 }
     : { ...DEFAULT_CAMERA, eye: DEFAULT_CAMERA.eye.map((v) => v * 0.3) as [number, number, number] };
   const c = clipCase(mesh, api, cam, concept ? 'concept' : 'zoom');
   const ms = createModelStage(host, ctx, {
