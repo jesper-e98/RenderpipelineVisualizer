@@ -29,3 +29,6 @@
 .clipc-cap b { color: var(--text); }
 .clipc-legend { font-family: var(--mono); font-size: 11.5px; color: var(--muted); text-align: center; }
 .ms-slot.top:has(.clipc-legend-panel) { width: auto; }
+
+/* CSS2D labels sort themselves with z-index; keep them under the glass panels. */
+.slide[data-id='clipping'] .three-labels { z-index: 1; }

@@ -89,15 +89,17 @@ function windingData(ctx: SlideContext) {
 /* ------------------------------------------------------------------ */
 /* The 3D scene shared by both modes                                   */
 /* ------------------------------------------------------------------ */
-const PW = 3.3; // window plane, world units (aspect 1.6)
+const PW = 3.0; // window plane, world units (aspect 1.6)
 const PH = PW / 1.6;
-const PLANE_POS = new Vector3(0.1, 0.12, -1.45);
+const PLANE_POS = new Vector3(-0.5, 0.22, -1.6);
 
 interface VcScene {
   ms: ModelStage;
   /** vp: window shown · stretch: NDC square → window · land: vertices fly to their pixels · wind: winding inset ·
    *  flip: inset turned around · cull: back faces peel away · wrong: front faces peel away (wrong setting) · xray: front faces see-through. */
   P: { vp: number; stretch: number; land: number; wind: number; flip: number; cull: number; wrong: number; xray: number; spin: number };
+  /** Repeat the back-face peel while the culling step is shown. */
+  loop: { on: boolean; t0: number; now: number };
   observer(step: number, animate: boolean): void;
   land(animate: boolean): void;
   noLand(): void;
@@ -119,6 +121,7 @@ function buildScene(host: HTMLElement, ctx: SlideContext, concept: boolean): VcS
   });
   const tex = glowTexture();
   const P = { vp: 1, stretch: 1, land: 1, wind: 0, flip: 0, cull: 0, wrong: 0, xray: 0, spin: 0 };
+  const loop = { on: false, t0: 0, now: 0 };
 
   /* ---------- Front and back faces as two meshes of the real model ---------- */
   const geo = ms.layers.solid.geometry;
@@ -126,6 +129,7 @@ function buildScene(host: HTMLElement, ctx: SlideContext, concept: boolean): VcS
   frontM.side = FrontSide;
   const backM = ms.material.clone() as PipelineMaterial;
   backM.side = BackSide;
+  backM.uniforms.uFlipFacing.value = 1; // three.js flips the winding for BackSide
   backM.uniforms.uBackTint.value = 0.75;
   backM.transparent = true;
   backM.depthWrite = false;
@@ -138,6 +142,7 @@ function buildScene(host: HTMLElement, ctx: SlideContext, concept: boolean): VcS
   /* ---------- The window (framebuffer) plane behind the model ---------- */
   const win = new Group();
   win.position.copy(PLANE_POS);
+  win.rotation.y = 0.28;
   ms.scene.add(win);
   const stretchG = new Group(); // scaled from the NDC square to the window aspect
   win.add(stretchG);
@@ -206,10 +211,13 @@ function buildScene(host: HTMLElement, ctx: SlideContext, concept: boolean): VcS
   );
   marker.position.copy(rc);
   win.add(marker);
+  // The magnified copy floats in free space at the top left, facing the viewer.
   const inset = new Group();
-  const insetC = new Vector3(PW * 0.3, yUp ? -PH * 0.14 : PH * 0.14, 0.25);
+  const insetC = concept ? new Vector3(-1.25, 1.05, 0.5) : new Vector3(-0.3, 1.08, 0.7);
   inset.position.copy(insetC);
-  win.add(inset);
+  inset.rotation.y = concept ? 0.25 : 0.1;
+  inset.scale.setScalar(concept ? 0.9 : 0.72);
+  ms.scene.add(inset);
   const span = Math.max(1e-6, ...real.map((p) => p.distanceTo(rc)));
   const K = 0.42 / span;
   const flipG = new Group();
@@ -224,8 +232,9 @@ function buildScene(host: HTMLElement, ctx: SlideContext, concept: boolean): VcS
   }
   const insetEdge = new LineLoop(new BufferGeometry().setFromPoints(ip), new LineBasicMaterial({ color: hdr(COLORS.white, 1.6), transparent: true }));
   flipG.add(insetFill, insetBack, insetEdge);
-  const link = new Line(new BufferGeometry().setFromPoints([rc, insetC]), new LineBasicMaterial({ color: hdr(COLORS.magenta, 1.4), transparent: true, opacity: 0.6 }));
-  win.add(link);
+  win.updateMatrixWorld(true);
+  const link = new Line(new BufferGeometry().setFromPoints([rc.clone().applyMatrix4(win.matrixWorld), insetC]), new LineBasicMaterial({ color: hdr(COLORS.magenta, 1.4), transparent: true, opacity: 0.6 }));
+  ms.scene.add(link);
   const vTags: CSS2DObject[] = ip.map((p, k) => {
     const lb = label(`v${k} ${W.win[k].window[0].toFixed(0)}, ${W.win[k].window[1].toFixed(0)}`, 'vc-tag');
     lb.element.style.color = VCOL[k];
@@ -307,6 +316,13 @@ function buildScene(host: HTMLElement, ctx: SlideContext, concept: boolean): VcS
     setO(windTag, wind);
     frontM.uniforms.uHighlightTri.value = wind > 0.01 ? tri : -10;
     // Culling: back faces peel away from the viewer; with the wrong setting the front faces go.
+    loop.now = time;
+    if (loop.on) {
+      // see-through → back faces peel off → solid again → hold, then around again.
+      const u = (time - loop.t0) % 5.2;
+      P.xray = u < 0.6 ? u / 0.6 : u < 2.4 ? 1 : u < 3.2 ? 1 - (u - 2.4) / 0.8 : 0;
+      P.cull = u < 0.8 ? 0 : u < 2.4 ? (u - 0.8) / 1.6 : 1;
+    }
     const cull = ease(P.cull);
     const wrong = ease(P.wrong);
     frontM.transparent = P.xray > 0.001 || wrong > 0.001;
@@ -319,13 +335,13 @@ function buildScene(host: HTMLElement, ctx: SlideContext, concept: boolean): VcS
     back.visible = backM.uniforms.uOpacity.value > 0.01;
     // With the wrong setting the inside is opaque (it is all that's drawn).
     backM.depthWrite = wrong > 0.5;
-    backM.uniforms.uBackTint.value = 0.75 - 0.35 * wrong;
+    backM.uniforms.uBackTint.value = 0.75;
     ms.pivot.rotation.y = ms.pivot.userData.baseY + P.spin * Math.sin(time * 0.5) * 0.6;
   });
   ms.pivot.userData.baseY = ms.pivot.rotation.y;
 
   const observer = (step: number, animate: boolean) => {
-    const target = step === 1 ? new Vector3(1.0, 0.7, 3.6) : step >= 2 ? new Vector3(1.2, 1.0, 3.0) : new Vector3(1.9, 1.15, 3.4);
+    const target = step === 1 ? new Vector3(0.9, 0.75, 3.7) : step >= 2 ? new Vector3(1.2, 1.0, 3.0) : new Vector3(1.4, 1.0, 3.6);
     gsap.killTweensOf(ms.camera.position);
     if (animate) gsap.to(ms.camera.position, { x: target.x, y: target.y, z: target.z, duration: dur(1.2), ease: 'power2.inOut' });
     else ms.camera.position.copy(target);
@@ -339,7 +355,7 @@ function buildScene(host: HTMLElement, ctx: SlideContext, concept: boolean): VcS
       gsap.to(P, { land: 1, duration: dur(1.6), delay: dur(1.2) });
     } else stream.progress(1, 0);
   };
-  return { ms, P, observer, land, noLand: () => (stream.points.visible = false) };
+  return { ms, P, loop, observer, land, noLand: () => (stream.points.visible = false) };
 }
 
 /* ------------------------------------------------------------------ */
@@ -454,8 +470,8 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
   const targets = [
     { vp: 1, stretch: 1, wind: 0, flip: 0, cull: 0, wrong: 0, xray: 0, spin: 0 },
     { vp: 1, stretch: 1, wind: 1, flip: 0, cull: 0, wrong: 0, xray: 0, spin: 0 },
-    { vp: 0.6, stretch: 1, wind: 0, flip: 0, cull: 1, wrong: 0, xray: 0, spin: 0 },
-    { vp: 0.6, stretch: 1, wind: 0, flip: 0, cull: 0, wrong: 1, xray: 0, spin: 0 },
+    { vp: 0.35, stretch: 1, wind: 0, flip: 0, cull: 1, wrong: 0, xray: 0, spin: 0 },
+    { vp: 0.35, stretch: 1, wind: 0, flip: 0, cull: 0, wrong: 1, xray: 0, spin: 0 },
   ];
   let last = -1;
   return {
@@ -465,12 +481,12 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
       showPanels(step, fwd);
       gsap.killTweensOf(P);
       const tg = targets[step];
-      if (fwd && step === 2) {
-        // First show the back faces through see-through front faces, then peel them away.
-        Object.assign(P, { ...tg, cull: 0, xray: 0 });
-        gsap.to(P, { xray: 1, duration: dur(0.7) });
-        gsap.to(P, { cull: 1, duration: dur(1.6), delay: dur(1.3), ease: 'power2.in' });
-        gsap.to(P, { xray: 0, duration: dur(0.8), delay: dur(2.7) });
+      S.loop.on = step === 2;
+      S.loop.t0 = S.loop.now;
+      if (step === 2) {
+        // Back faces shown through see-through front faces, then peeled away – on repeat.
+        if (fwd) gsap.to(P, { vp: tg.vp, wind: 0, wrong: 0, duration: dur(0.9) });
+        else Object.assign(P, tg, { land: 1 });
       } else if (fwd) gsap.to(P, { ...tg, duration: dur(step === 3 ? 1.6 : 0.9), ease: 'power2.inOut' });
       else Object.assign(P, tg, { land: 1 });
       if (step === 0) S.land(fwd);
@@ -535,6 +551,8 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
       if (fwd) gsap.fromTo(cap, { opacity: 0, y: 8 }, { opacity: 1, y: 0, duration: dur(0.4) });
       gsap.killTweensOf(P);
       const tg = targets[step];
+      S.loop.on = step === 2;
+      S.loop.t0 = S.loop.now;
       if (fwd && step === 0) {
         Object.assign(P, { ...tg, stretch: 0, vp: 0, land: 0 });
         gsap.to(P, { vp: 1, duration: dur(0.5) });
@@ -543,11 +561,9 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
         Object.assign(P, { wind: 0, flip: 0 });
         gsap.to(P, { wind: 1, duration: dur(0.6) });
         gsap.to(P, { flip: 1, duration: dur(1.4), delay: dur(3.0), ease: 'power2.inOut' });
-      } else if (fwd && step === 2) {
-        Object.assign(P, { ...tg, cull: 0, xray: 0 });
-        gsap.to(P, { xray: 1, duration: dur(0.7) });
-        gsap.to(P, { cull: 1, duration: dur(1.6), delay: dur(1.4), ease: 'power2.in' });
-        gsap.to(P, { xray: 0, duration: dur(0.8), delay: dur(2.8) });
+      } else if (step === 2) {
+        if (fwd) gsap.to(P, { vp: tg.vp, wind: 0, wrong: 0, spin: 1, duration: dur(0.9) });
+        else Object.assign(P, tg, { land: 1 });
       } else if (fwd) gsap.to(P, { ...tg, duration: dur(1.4), ease: 'power2.inOut' });
       else {
         Object.assign(P, tg, { land: 1 });

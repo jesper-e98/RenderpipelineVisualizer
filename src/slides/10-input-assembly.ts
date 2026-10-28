@@ -240,7 +240,8 @@ function flashPoints(ms: ModelStage, baseSize: number, flashScale = 2.6): FlashP
       cAttr.needsUpdate = sAttr.needsUpdate = true;
     },
     alpha(a) {
-      mat.uniforms.uAlpha.value = a;
+      // Dense meshes: additive dots would pile up to white.
+      mat.uniforms.uAlpha.value = a * Math.max(0.3, Math.min(1, 6000 / n));
       points.visible = a > 0.001;
     },
   };
@@ -377,7 +378,7 @@ function buildScene(host: HTMLElement, ctx: SlideContext, concept: boolean): IaS
   cursor.visible = false;
   ms.pivot.add(cursor);
 
-  const pointSize = Math.max(0.018, Math.min(0.05, 0.9 / Math.sqrt(Math.max(1, mesh.vertexCount))));
+  const pointSize = Math.max(0.012, Math.min(0.05, 0.9 / Math.sqrt(Math.max(1, mesh.vertexCount))));
   const pts = flashPoints(ms, pointSize, concept ? 5 : 2.6);
   pts.setBase(() => new Color(COLORS.cyan).multiplyScalar(0.45), 0);
   pts.alpha(0);
@@ -662,7 +663,7 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
     if (step === 2 && d.main.indices > 0) {
       const adv = Math.min(idxRate * dt, d.main.indices);
       const end = head + adv;
-      const budget = 4000;
+      const budget = mesh.vertexCount > 20000 ? 250 : 4000;
       let flashed = 0;
       for (let i = Math.floor(head); i < Math.floor(end); i++) {
         const ii = i % d.main.indices;

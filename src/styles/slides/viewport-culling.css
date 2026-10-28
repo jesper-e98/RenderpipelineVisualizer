@@ -22,3 +22,6 @@
 
 /* ---------- Viewport & culling: concept ---------- */
 .vcc-cap { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.5; }
+
+/* CSS2D labels sort themselves with z-index; keep them under the glass panels. */
+.slide[data-id='viewport-culling'] .three-labels { z-index: 1; }

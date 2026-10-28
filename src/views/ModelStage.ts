@@ -126,6 +126,8 @@ export interface ModelStage {
   /** A glass panel on the overlay. */
   panel(title: string, content: (Node | string)[], opts?: { side?: 'right' | 'left' | 'bottom' | 'top'; className?: string; collapsed?: boolean }): HTMLElement;
   onFrame(cb: (t: number, dt: number) => void): void;
+  /** Stop every running tween started through this stage (call before snapping to a step). */
+  killTweens(): void;
   /** gsap tween that is cleaned up automatically. */
   tween(target: object, vars: gsap.TweenVars): gsap.core.Tween;
   destroy(): void;
@@ -551,6 +553,10 @@ export function createModelStage(host: HTMLElement, ctx: SlideContext, opts: Mod
       frameCbs.push(cb);
     },
     tween,
+    killTweens() {
+      tweens.forEach((tw) => tw.kill());
+      tweens.length = 0;
+    },
     destroy() {
       tweens.forEach((tw) => tw.kill());
       host.removeEventListener('pointerdown', onPointer);

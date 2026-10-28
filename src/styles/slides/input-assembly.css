@@ -66,3 +66,6 @@
 .iac-slot.new { border-color: var(--amber); color: #fff; background: rgba(255, 181, 71, 0.35); box-shadow: 0 0 14px rgba(255, 181, 71, 0.6); }
 .ms-panel .iac-stream + .iac-cache + .stat-row { margin-top: 6px; }
 .iac-strip-panel .ia-strip { max-width: 220px; display: block; margin: 0 auto 4px; }
+
+/* CSS2D labels sort themselves with z-index; keep them under the glass panels. */
+.slide[data-id='input-assembly'] .three-labels { z-index: 1; }
