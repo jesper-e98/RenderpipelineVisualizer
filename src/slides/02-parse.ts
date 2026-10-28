@@ -219,8 +219,8 @@ function parseDemo(m: MeshData): Demo {
 
   const map = hexBytes(pv);
   if (kind === 'stl-bin') {
-    const head = readAscii(map, 0, 40);
-    rows.push({ src: 'bytes 0–79', cls: 'b-head', label: L('header (ignoreras)', 'header (ignored)'), out: `<span class="mono ps-dim">"${escapeHtml((head ?? '').replace(/\.+$/, ''))}…"</span>` });
+    const head = (readAscii(map, 0, 40) ?? '').replace(/\.+$/, '');
+    rows.push({ src: 'bytes 0–79', cls: 'b-head', label: L('header (ignoreras)', 'header (ignored)'), out: `<span class="mono ps-dim">${head ? `"${escapeHtml(head)}…"` : '00 00 00 …'}</span>` });
     rows.push({
       src: 'bytes 80–83',
       cls: 'b-len',
@@ -438,16 +438,23 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
         const first = lineEls[demo.lines[0]];
         srcBox.scrollTo({ top: Math.max(0, first.offsetTop - srcBox.offsetTop - 40), behavior: animate ? 'smooth' : 'auto' });
       } else if (step === 0) srcBox.scrollTop = 0;
-      if (!animate) return;
+      if (!animate) {
+        const kids = cards[step].querySelectorAll('.ps-byte, .ps-row, .ps-flag, tr');
+        const bars = cards[step].querySelectorAll('.ps-bar i');
+        if (kids.length) gsap.set(kids, { opacity: 1, x: 0, y: 0 });
+        if (bars.length) gsap.set(bars, { scaleX: 1 });
+        gsap.set(cards[step], { opacity: 1, x: 0 });
+        return;
+      }
       const c = cards[step];
       gsap.fromTo(c, { opacity: 0, x: 24 }, { opacity: 1, x: 0, duration: dur(0.45), ease: 'power2.out' });
-      if (step === 0) gsap.from(c.querySelectorAll('.ps-byte'), { opacity: 0, y: -10, stagger: 0.02, duration: dur(0.3) });
-      if (step === 1) gsap.from(c.querySelectorAll('.ps-row'), { opacity: 0, x: -16, stagger: 0.09, duration: dur(0.35), delay: dur(0.1) });
+      if (step === 0) gsap.fromTo(c.querySelectorAll('.ps-byte'), { opacity: 0, y: -10 }, { opacity: 1, y: 0, stagger: 0.02, duration: dur(0.3) });
+      if (step === 1) gsap.fromTo(c.querySelectorAll('.ps-row'), { opacity: 0, x: -16 }, { opacity: 1, x: 0, stagger: 0.09, duration: dur(0.35), delay: dur(0.1) });
       if (step === 2) {
-        gsap.from(c.querySelectorAll('.ps-flag'), { opacity: 0, y: 8, stagger: 0.1, duration: dur(0.3) });
-        gsap.from(c.querySelectorAll('.ps-bar i'), { width: 0, duration: dur(0.9), ease: 'power3.out', stagger: 0.25 });
+        gsap.fromTo(c.querySelectorAll('.ps-flag'), { opacity: 0, y: 8 }, { opacity: 1, y: 0, stagger: 0.1, duration: dur(0.3) });
+        gsap.fromTo(c.querySelectorAll('.ps-bar i'), { scaleX: 0 }, { scaleX: 1, transformOrigin: 'left center', duration: dur(0.9), ease: 'power3.out', stagger: 0.25 });
       }
-      if (step === 3) gsap.from(c.querySelectorAll('tr'), { opacity: 0, x: 12, stagger: 0.06, duration: dur(0.3) });
+      if (step === 3) gsap.fromTo(c.querySelectorAll('tr'), { opacity: 0, x: 12 }, { opacity: 1, x: 0, stagger: 0.06, duration: dur(0.3) });
     },
     destroy() {
       gsap.killTweensOf(cards);
@@ -480,7 +487,7 @@ void main() {
   p += vec3(sin(aDelay * 40.0 + uTime) * 0.5, cos(aDelay * 23.0) * 0.6, 0.9) * arc * (0.35 + aDelay * 0.4);
   p += vec3(sin(uTime * 2.0 + aDelay * 90.0), cos(uTime * 1.7 + aDelay * 60.0), 0.0) * 0.006;
   vec3 endColor = mix(vec3(0.22, 0.88, 1.0), vec3(1.0, 0.25, 0.82), clamp(aEnd.y * 0.5 + 0.5, 0.0, 1.0));
-  vColor = mix(aColor, endColor, e) * (1.0 + arc * 0.8);
+  vColor = mix(aColor, endColor, e) * (1.0 + arc * 0.6);
   vAlpha = mix(1.0, uDim, e);
   vec4 mv = viewMatrix * vec4(p, 1.0);
   gl_PointSize = uSize * (1.0 + arc * 1.5) * (3.2 / -mv.z);
@@ -494,7 +501,7 @@ void main() {
   float r = length(d);
   if (r > 0.5) discard;
   float a = smoothstep(0.5, 0.0, r);
-  gl_FragColor = vec4(vColor * a, a * vAlpha);
+  gl_FragColor = vec4(vColor * a * 0.55, a * vAlpha);
 }`;
 
 /** Area-weighted random points on the mesh surface (plus every vertex if there are few). */
@@ -580,7 +587,7 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
   scene.add(pageMesh);
 
   // ---- Particles: start on lit text pixels, end on the mesh surface ----
-  const N = Math.min(6000, Math.max(2500, m.vertexCount * 2));
+  const N = Math.min(3200, Math.max(1600, m.vertexCount * 2));
   const img = pg.getImageData(0, 0, CW, CH).data;
   const lit: number[] = [];
   for (let y = 0; y < CH; y += 2) for (let x = 0; x < CW; x += 2) if (img[(y * CW + x) * 4 + 3] > 120) lit.push(x, y);
@@ -609,7 +616,7 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
   const uniforms = {
     uMix: { value: 0 },
     uTime: { value: 0 },
-    uSize: { value: 5.5 * Math.min(window.devicePixelRatio || 1, 2) },
+    uSize: { value: 4.2 * Math.min(window.devicePixelRatio || 1, 2) },
     uDim: { value: 1 },
     uEnd: { value: new Matrix4() },
   };
@@ -639,9 +646,9 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
   const vg = new BufferGeometry();
   vg.setAttribute('position', new BufferAttribute(vpos, 3));
   const vMat = new ShaderMaterial({
-    uniforms: { uOpacity: { value: 0 }, uSize: { value: 7 * Math.min(window.devicePixelRatio || 1, 2) } },
+    uniforms: { uOpacity: { value: 0 }, uSize: { value: 5 * Math.min(window.devicePixelRatio || 1, 2) } },
     vertexShader: 'uniform float uSize; void main(){ vec4 mv = modelViewMatrix * vec4(position,1.0); gl_PointSize = uSize * (3.2 / -mv.z); gl_Position = projectionMatrix * mv; }',
-    fragmentShader: 'uniform float uOpacity; void main(){ float r = length(gl_PointCoord-0.5); if (r>0.5) discard; float a = smoothstep(0.5,0.1,r); gl_FragColor = vec4(vec3(1.0,0.95,0.8)*a, a*uOpacity); }',
+    fragmentShader: 'uniform float uOpacity; void main(){ float r = length(gl_PointCoord-0.5); if (r>0.5) discard; float a = smoothstep(0.5,0.1,r); gl_FragColor = vec4(vec3(1.0,0.95,0.8)*a*0.7, a*uOpacity); }',
     transparent: true,
     depthWrite: false,
     blending: AdditiveBlending,
@@ -689,8 +696,8 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
   const view = {
     scene,
     camera,
-    bloom: 0.9,
-    bloomThreshold: 0.12,
+    bloom: 0.55,
+    bloomThreshold: 0.3,
     orbit: true,
     onFrame: (time: number, dt: number) => {
       stars.tick(time);
@@ -706,9 +713,9 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
 
   const targets = [
     { mix: 0, page: 0.35, dim: 1, verts: 0, nrm: 0, gizmo: 0, norm: 0 },
-    { mix: 1, page: 0.0, dim: 0.85, verts: 0, nrm: 0, gizmo: 0, norm: 0 },
-    { mix: 1, page: 0.0, dim: 0.22, verts: 1, nrm: 0.75, gizmo: 0, norm: 0 },
-    { mix: 1, page: 0.0, dim: 0.3, verts: 0.9, nrm: 0.35, gizmo: 1, norm: 1 },
+    { mix: 1, page: 0.0, dim: 0.6, verts: 0, nrm: 0, gizmo: 0, norm: 0 },
+    { mix: 1, page: 0.0, dim: 0.12, verts: 0.7, nrm: 0.8, gizmo: 0, norm: 0 },
+    { mix: 1, page: 0.0, dim: 0.18, verts: 0.6, nrm: 0.35, gizmo: 1, norm: 1 },
   ];
   const hudText = [
     L(`<b>${formatBytes(m.fileSize)}</b> text och bytes – ännu inga tal`, `<b>${formatBytes(m.fileSize)}</b> of text and bytes – no numbers yet`),

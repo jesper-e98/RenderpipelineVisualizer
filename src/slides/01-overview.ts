@@ -139,7 +139,7 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
   const laneTop = [4, 98, 192, 286];
   const laneH = 90;
   const nodeY = (lane: number) => laneTop[lane] + 54;
-  const slotX = (i: number) => 92 + i * 174;
+  const slotX = (i: number) => 96 + i * 174;
 
   const nodes: FlowNode[] = [];
   const edges: FlowEdge[] = [];
@@ -163,7 +163,7 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
   const lanes = LANES.map((lane, li) => {
     const g = s('g', { class: 'ov-lane' }, [
       s('rect', { x: 6, y: laneTop[li], width: VW - 12, height: laneH, rx: 14, fill: lane.color, 'fill-opacity': 0.045, stroke: lane.color, 'stroke-opacity': 0.25 }),
-      s('text', { x: 20, y: laneTop[li] + 19, fill: lane.color, class: 'ov-lane-title' }, [t(lane.title)]),
+      s('text', { x: li === 3 ? 880 : VW - 20, y: laneTop[li] + 19, fill: lane.color, 'text-anchor': 'end', class: 'ov-lane-title' }, [t(lane.title)]),
     ]);
     svg.insertBefore(g, svg.firstChild!.nextSibling);
     return g;
@@ -324,14 +324,14 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
     const pad = 18;
     const sw = Math.min(W * 0.17, 190);
     const sh = (sw * RH) / RW;
-    trackY = Math.round(H * 0.3);
+    trackY = Math.round(Math.max(56, H * 0.24));
     const right = W - pad - sw - 26;
     x0 = pad + 14;
     const zw = (right - x0 - 3 * 12) / 4;
     zones = [0, 1, 2, 3].map((i) => ({ x0: x0 + i * (zw + 12), x1: x0 + i * (zw + 12) + zw }));
     screenRect = { x: W - pad - sw, y: trackY - sh / 2, w: sw, h: sh };
     captionEls.forEach((el, i) => {
-      Object.assign(el.style, { left: `${zones[i].x0}px`, width: `${zw}px`, top: `${trackY + 52}px` });
+      Object.assign(el.style, { left: `${zones[i].x0}px`, width: `${zw}px`, top: `${trackY + 46}px` });
     });
     Object.assign(screenLabel.style, { left: `${screenRect.x}px`, width: `${sw}px`, top: `${screenRect.y + sh + 10}px` });
   };

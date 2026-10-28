@@ -13,12 +13,12 @@
 
 .ov-concept .ov-canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
 .ov-overlay { position: absolute; inset: 0; pointer-events: none; }
-.ov-zone-cap { position: absolute; display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border-radius: 12px; border: 1px solid var(--line); background: rgba(5, 6, 13, 0.55); backdrop-filter: blur(6px); opacity: 0.3; transition: opacity 0.35s, border-color 0.35s, box-shadow 0.35s; pointer-events: auto; }
+.ov-zone-cap { position: absolute; display: flex; flex-wrap: wrap; align-content: flex-start; column-gap: 8px; row-gap: 1px; padding: 8px 10px; border-radius: 12px; border: 1px solid var(--line); background: rgba(5, 6, 13, 0.55); backdrop-filter: blur(6px); opacity: 0.3; transition: opacity 0.35s, border-color 0.35s, box-shadow 0.35s; pointer-events: auto; }
 .ov-zone-cap.on { opacity: 0.8; }
 .ov-zone-cap.cur { opacity: 1; border-color: var(--line-strong); box-shadow: 0 0 24px rgba(155, 123, 255, 0.18); }
-.ov-zone-title { font-size: 10.5px; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ov-stage { text-align: left; border: 0; background: none; padding: 1px 0; font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0.9; }
-.ov-stage::before { content: '▸ '; opacity: 0.6; }
+.ov-zone-title { flex: 0 0 100%; font-size: 10.5px; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 3px; line-height: 1.3; }
+.ov-stage { text-align: left; border: 0; background: none; padding: 1px 0; font-size: 12px; font-weight: 600; white-space: nowrap; opacity: 0.9; }
+.ov-stage::before { content: '▸'; margin-right: 3px; opacity: 0.6; }
 .ov-stage:hover { opacity: 1; text-decoration: underline; text-shadow: 0 0 10px currentColor; }
 .ov-screen-cap { position: absolute; text-align: center; font-size: 11px; font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase; color: var(--dim); transition: color 0.3s; }
 .ov-screen-cap.on { color: var(--amber); text-shadow: 0 0 12px rgba(255, 181, 71, 0.6); }
