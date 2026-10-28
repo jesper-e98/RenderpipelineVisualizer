@@ -437,11 +437,11 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
     g.font = '600 11px "JetBrains Mono", monospace';
     g.fillStyle = '#646d94';
     g.textAlign = 'center';
-    [0, 0.5, 1].forEach((d) => g.fillText(`z = ${d}`, planeX(d), H - 66));
+    const ph = Math.min(150, H * 0.42);
+    [0, 0.5, 1].forEach((d) => g.fillText(`z = ${d}`, planeX(d), cy + ph / 2 + 22));
     g.restore();
 
     // Surfaces as glass planes in perspective.
-    const ph = Math.min(150, H * 0.42);
     layers.forEach((l) => {
       const x = planeX(l.d);
       g.save();

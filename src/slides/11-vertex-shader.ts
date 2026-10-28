@@ -142,8 +142,8 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
 
   /* ---------- 3D scene ---------- */
   const { scene, camera } = makeScene();
-  camera.position.set(4.4, 2.5, 4.6);
-  camera.lookAt(0, 0.2, 0.6);
+  camera.position.set(5.6, 2.7, 1.9);
+  camera.lookAt(0, 0, 0);
   const tex = glowTexture();
   scene.add(starfield(500));
   const model = new Group();
@@ -221,7 +221,7 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
       objAxes.set(P.obj);
       worldAxes.set(P.world);
       camAxes.set(P.cam);
-      frMat.opacity = 0.18 + 0.6 * Math.max(P.cam * 0.6, P.clip);
+      frMat.opacity = 0.1 + 0.65 * Math.max(P.cam * 0.6, P.clip);
       farLabel.element.style.opacity = nearLabel.element.style.opacity = String(Math.max(P.cam * 0.5, P.clip));
       posLineGeo.setFromPoints([new Vector3(), wp]);
       (posLine.material as LineBasicMaterial).opacity = P.obj * 0.9;
@@ -480,11 +480,11 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
 
   // Observer camera.
   camera.position.set(5.6, 3.3, 5.4);
-  const look = new Vector3(0.3, 0.1, 0.5);
+  const look = new Vector3(0.2, -0.1, 0.2);
   camera.lookAt(look);
 
   // Morph state: s = 0 object, 1 world, 2 view, 3 clip; fly = camera flight 0..1; nrm = normals.
-  const S = { s: 0, fly: 1, nrm: 0 };
+  const S = { s: 0, fly: 1, nrm: 0, cam: 0 };
   const tmp = new Vector3();
   const qI = new Quaternion();
   const q = new Quaternion();
@@ -495,14 +495,18 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
     return m;
   };
   /** World point → display point for the current s (stages ≥ 1). */
+  const wIn = new Vector3();
+  const boxP = new Vector3();
+  const vx = new Vector3();
   const display = (w: Vector3, out: Vector3) => {
     const a2 = ease(clamp01(S.s - 1));
     const a3 = ease(clamp01(S.s - 2));
+    wIn.copy(w); // `out` may alias `w`
     q.slerpQuaternions(qI, vq, a2);
-    out.copy(w).applyQuaternion(q).addScaledVector(vt, a2); // world → (partial) view
+    out.copy(wIn).applyQuaternion(q).addScaledVector(vt, a2); // world → (partial) view
     if (a3 > 0) {
       // Real projection with this API's conventions, then into a display cube.
-      const vx = w.clone().applyMatrix4(V);
+      vx.copy(wIn).applyMatrix4(V);
       const c = [
         Pm.elements[0] * vx.x + Pm.elements[4] * vx.y + Pm.elements[8] * vx.z + Pm.elements[12],
         Pm.elements[1] * vx.x + Pm.elements[5] * vx.y + Pm.elements[9] * vx.z + Pm.elements[13],
@@ -516,8 +520,8 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
       // Display: x right, y up, depth runs into the screen (−Z), box centered on the view target.
       // The box is as deep as this API's NDC z range: 2 for OpenGL, 1 for Vulkan / D3D12.
       const depthHalf = (BOX * (1 - zMin)) / 2;
-      tmp.set(nx * BOX, ny * BOX, -camDist + depthHalf - ((nz - zMin) / (1 - zMin)) * 2 * depthHalf);
-      out.lerp(tmp, a3);
+      boxP.set(nx * BOX, ny * BOX, -camDist + depthHalf - ((nz - zMin) / (1 - zMin)) * 2 * depthHalf);
+      out.lerp(boxP, a3);
     }
     out.z += camDist * a2; // keep the scene centered in front of the observer
     return out;
@@ -578,8 +582,8 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
     const a2 = clamp01(S.s - 1);
     objAxes.mat.opacity = 1 - 0.75 * clamp01(S.s - 0.5);
     worldAxes.mat.opacity = clamp01(S.s * 2) * (1 - 0.8 * a2) * (1 - a3);
-    camAxes.mat.opacity = clamp01((S.s - 0.6) * 3) * (1 - a3);
-    frustum.mat.opacity = clamp01((S.s - 0.6) * 3) * (0.5 + 0.5 * a3);
+    camAxes.mat.opacity = S.cam * (1 - a3);
+    frustum.mat.opacity = S.cam * (0.5 + 0.5 * a3);
     grid.mat.opacity = 0.15 + 0.45 * clamp01(S.s);
     crates.mat.opacity = clamp01(S.s * 1.5) * 0.9;
     (pts.material as PointsMaterial).size = 0.045 + 0.01 * Math.sin(time * 3) * (1 - a3);
@@ -590,7 +594,7 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
     };
     tagAt(objTag, new Vector3(0, -0.25, 0).applyMatrix4(M), 1 - 0.7 * clamp01(S.s - 0.5));
     tagAt(worldTag, new Vector3(1.7, 0.1, 0), clamp01(S.s * 2) * (1 - a2) * (1 - a3));
-    tagAt(camTag, new Vector3(0, -0.22, 0).applyMatrix4(inv), clamp01((S.s - 0.6) * 3) * (1 - a3));
+    tagAt(camTag, new Vector3(0, -0.22, 0).applyMatrix4(inv), S.cam * (1 - a3));
     const zr = api === 'opengl' ? ['z = −1', 'z = +1'] : ['z = 0', 'z = 1'];
     boxTagNear.element.textContent = `near · ${zr[0]}`;
     boxTagFar.element.textContent = `far · ${zr[1]}`;
@@ -609,9 +613,9 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
     onFrame: (time) => {
       stars.tick(time);
       // Slow observer sway so the scene feels alive.
-      const r = 7.9;
+      const r = 6.2;
       const ang = 0.8 + Math.sin(time * 0.18) * 0.18;
-      camera.position.set(Math.sin(ang) * r + look.x, 3.3, Math.cos(ang) * r + look.z);
+      camera.position.set(Math.sin(ang) * r + look.x, 2.6, Math.cos(ang) * r + look.z);
       camera.lookAt(look);
       update(time);
     },
@@ -650,11 +654,11 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
     ),
   ];
   const targets = [
-    { s: 0, fly: 0, nrm: 0 },
-    { s: 1, fly: 0, nrm: 0 },
-    { s: 2, fly: 1, nrm: 0 },
-    { s: 3, fly: 1, nrm: 0 },
-    { s: 1, fly: 1, nrm: 1 },
+    { s: 0, fly: 0, nrm: 0, cam: 0 },
+    { s: 1, fly: 0, nrm: 0, cam: 0 },
+    { s: 2, fly: 1, nrm: 0, cam: 1 },
+    { s: 3, fly: 1, nrm: 0, cam: 1 },
+    { s: 1, fly: 1, nrm: 1, cam: 1 },
   ];
   let last = -1;
   return {
@@ -672,6 +676,7 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
       if (fwd && step === 2) {
         // Fly the camera in first, then transform the world into view space.
         S.fly = 0;
+        gsap.to(S, { cam: 1, duration: dur(0.4) });
         gsap.to(S, { fly: 1, duration: dur(1.6), ease: 'power2.inOut' });
         gsap.to(S, { s: 2, duration: dur(1.8), delay: dur(1.7), ease: 'power1.inOut' });
       } else if (fwd) {

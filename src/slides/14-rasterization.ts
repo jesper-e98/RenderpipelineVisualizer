@@ -489,7 +489,7 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
     canvas.width = Math.round(W * dpr);
     canvas.height = Math.round(H * dpr);
     g.setTransform(dpr, 0, 0, dpr, 0, 0);
-    cell = Math.min((W - 30) / COLS, (H - 70) / ROWS);
+    cell = Math.max(2, Math.min((W - 30) / COLS, (H - 70) / ROWS));
     ox = (W - cell * COLS) / 2;
     oy = Math.max(10, (H - 60 - cell * ROWS) / 2);
   };
@@ -690,8 +690,8 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
       const S = Math.min(130, H * 0.32);
       const ix = W - S - 18;
       const iy = 18;
-      const ex = 31;
-      const ey = 14; // a pixel on edge B→C
+      const ex = 34;
+      const ey = 15; // a pixel on edge B→C (2 of 4 samples inside)
       g.save();
       g.fillStyle = 'rgba(5,6,13,0.85)';
       g.strokeStyle = 'rgba(255,255,255,0.6)';
@@ -836,7 +836,7 @@ cmd->DrawIndexedInstanced(${n}, 1, 0, 0, 0);`;
         'I Vulkan bakas rasteriserings- och multisample-tillståndet in i pipelinen (vissa delar kan göras dynamiska, t.ex. cullMode med VK_DYNAMIC_STATE_CULL_MODE).',
         'In Vulkan, rasterization and multisample state are baked into the pipeline (some parts can be dynamic, e.g. cullMode with VK_DYNAMIC_STATE_CULL_MODE).',
       ),
-      code: [{ lang: 'cpp', src: vk, highlight: [[1, 2, 3, 4], [5, 6, 7], [18], [10, 11, 12, 13, 16]] }],
+      code: [{ lang: 'cpp', src: vk, highlight: [[1, 2, 3, 4], [5, 6, 7], [15, 17], [10, 11, 12, 13, 16]] }],
       terms: [
         { term: 'fragment', desc: L('En täckt pixel (eller sample) med interpolerade attribut.', 'A covered pixel (or sample) with interpolated attributes.') },
         { term: 'rasterizationSamples', desc: L('Antal samples per pixel; måste matcha attachmentens VkImage.', 'Samples per pixel; must match the attachment\'s VkImage.') },
@@ -851,7 +851,7 @@ cmd->DrawIndexedInstanced(${n}, 1, 0, 0, 0);`;
         'I D3D12 ligger rasterizer-tillståndet i PSO:n. MSAA styrs av SampleDesc i PSO:n och render targeten – MultisampleEnable påverkar bara linjer.',
         'In D3D12 the rasterizer state lives in the PSO. MSAA is set by SampleDesc in the PSO and the render target – MultisampleEnable only affects lines.',
       ),
-      code: [{ lang: 'cpp', src: dx, highlight: [[1, 10, 11], [2, 3, 4], [5, 7, 8], [12, 13, 14, 15]] }],
+      code: [{ lang: 'cpp', src: dx, highlight: [[1, 10, 11], [2, 3, 4], [11, 16], [6, 12, 13, 14]] }],
       terms: [
         { term: 'SV_Position', desc: L('I pixel shadern: pixelcentrum (x+0.5, y+0.5), origo uppe till vänster.', 'In the pixel shader: pixel center (x+0.5, y+0.5), origin top-left.') },
         { term: 'top-left rule', desc: L('Ett pixelcentrum exakt på en kant täcks bara om kanten är en top- eller left-kant.', 'A pixel center exactly on an edge is covered only if it is a top or left edge.') },

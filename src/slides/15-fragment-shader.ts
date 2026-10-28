@@ -274,7 +274,7 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
   let step = 0;
   let t0 = performance.now();
   let raf = 0;
-  const pick = () => cells.reduce((a, c) => (Math.hypot(c.n[0] + 0.38, c.n[1] - 0.3) < Math.hypot(a.n[0] + 0.38, a.n[1] - 0.3) ? c : a), cells[0]);
+  const pick = () => cells.reduce((a, c) => (Math.hypot(c.n[0] - 0.3, c.n[1] - 0.22) < Math.hypot(a.n[0] - 0.3, a.n[1] - 0.22) ? c : a), cells[0]);
 
   const frame = (now: number) => {
     raf = requestAnimationFrame(frame);
@@ -307,7 +307,7 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
     const paintT = step === 2 ? (tt % 5.5) / 4 : 2;
     cells.forEach((c) => {
       let col: V3 | null = null;
-      if (step >= 3 || (step === 2 && c.d / (R / cell + 6) < paintT)) {
+      if (step === 1 || step >= 3 || (step === 2 && c.d / (R / cell + 6) < paintT)) {
         const diff = Math.max(dot(c.n, Ld), 0);
         const spec = diff > 0 ? Math.pow(Math.max(dot(c.n, Hd), 0), SHININESS) : 0;
         col = [0, 1, 2].map((k) => Math.min(1, BASE_COLOR[k] * (AMBIENT + diff) + spec * 0.8)) as V3;

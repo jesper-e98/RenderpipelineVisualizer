@@ -1,0 +1,57 @@
+/* ---------- 09 Commands & submit ---------- */
+.cmd-data { position: absolute; inset: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 40%); gap: 10px; padding: 12px 14px; }
+.cmd-data { transition: grid-template-columns 0.4s; }
+.cmd-data[data-step='3'] { grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr); }
+.cmd-side2 .cmd-legend { margin-top: 10px; }
+.cmd-listcard { display: flex; flex-direction: column; min-height: 0; padding: 8px 10px; }
+.cmd-listcard h4 { font-size: 11px; margin-bottom: 4px; }
+.cmd-list { flex: 1; min-height: 0; font-family: var(--mono); font-size: 11px; }
+.cmd-row { --kc: var(--muted); display: flex; gap: 6px; align-items: baseline; padding: 1px 6px; border-radius: 5px; white-space: nowrap; border-left: 2px solid color-mix(in srgb, var(--kc) 60%, transparent); margin-bottom: 1px; transition: background 0.3s, opacity 0.3s, box-shadow 0.3s; }
+.cmd-i { color: var(--dim); font-size: 10px; flex: none; }
+.cmd-call { color: var(--kc); font-weight: 700; flex: none; }
+.cmd-args { color: var(--muted); overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.cmd-note { margin-left: auto; padding-left: 8px; color: var(--dim); font-size: 10px; flex: none; }
+.k-sync { --kc: var(--amber); }
+.k-rec { --kc: var(--cyan); }
+.k-barrier { --kc: #ff8a5c; }
+.k-pass { --kc: var(--violet); }
+.k-state { --kc: #8fb4ff; }
+.k-bind { --kc: var(--green); }
+.k-draw { --kc: var(--magenta); }
+.k-submit { --kc: var(--api); }
+.cmd-list:has(.mark) .cmd-row:not(.mark) { opacity: 0.4; }
+.cmd-row.mark { background: color-mix(in srgb, var(--kc) 14%, transparent); box-shadow: inset 2px 0 0 var(--kc); }
+.cmd-row.mark.k-draw { box-shadow: inset 2px 0 0 var(--kc), 0 0 16px rgba(255, 63, 210, 0.35); }
+.cmd-right { position: relative; min-height: 0; }
+.cmd-right > * { position: absolute; inset: 0; display: none; min-height: 0; overflow: auto; }
+.cmd-right > .on { display: flex; flex-direction: column; }
+.cmd-side { gap: 8px; }
+.cmd-side .stat { padding: 7px 10px; }
+.cmd-side .stat .v { font-size: 20px; }
+.cmd-kv { font-size: 12px; padding: 2px 4px; }
+.cmd-legend { display: flex; flex-wrap: wrap; gap: 4px; }
+.cmd-legend span { font-family: var(--mono); font-size: 10px; padding: 1px 7px; border-radius: 99px; color: var(--kc); border: 1px solid color-mix(in srgb, var(--kc) 50%, transparent); background: color-mix(in srgb, var(--kc) 10%, transparent); }
+.cmd-right .card { padding: 8px 12px; }
+.cmd-right .card h4 { font-size: 11px; margin-bottom: 6px; }
+.cmd-hidden { margin: 0; padding-left: 18px; display: grid; gap: 5px; font-size: 12.5px; color: var(--muted); }
+.cmd-hidden li::marker { color: var(--violet); font-family: var(--mono); }
+.cmd-p { margin: 8px 0 0; font-size: 12px; color: var(--muted); line-height: 1.45; }
+.cmd-p.small { font-size: 11px; margin-top: 4px; }
+.cmd-p code { color: var(--cyan); font-size: 10.5px; }
+.cmd-side1 .stat .v { font-size: 20px; }
+.cmd-flow { display: grid; grid-template-columns: 1fr auto 0.7fr; gap: 8px; align-items: center; }
+.cmd-box { padding: 8px; border-radius: 10px; border: 1px solid var(--api); background: color-mix(in srgb, var(--api) 10%, rgba(8, 10, 24, 0.7)); box-shadow: 0 0 18px color-mix(in srgb, var(--api) 30%, transparent); min-width: 0; }
+.cmd-box b { display: block; font-family: var(--mono); font-size: 11px; color: var(--api); margin-bottom: 6px; overflow-wrap: anywhere; }
+.cmd-box.q { border-color: var(--violet); box-shadow: 0 0 18px rgba(155, 123, 255, 0.3); text-align: center; }
+.cmd-box.q b { color: var(--violet); }
+.cmd-box.q span { font-weight: 800; color: var(--magenta); text-shadow: 0 0 10px var(--magenta); }
+.cmd-pk { display: flex; flex-wrap: wrap; gap: 3px; }
+.cmd-pk span { width: 18px; height: 12px; border-radius: 3px; background: color-mix(in srgb, var(--kc) 55%, transparent); box-shadow: 0 0 6px var(--kc); }
+.cmd-arrow { font-family: var(--mono); font-size: 10px; color: var(--muted); text-align: center; position: relative; padding-bottom: 8px; }
+.cmd-arrow::after { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: linear-gradient(90deg, var(--api), var(--violet)); box-shadow: 0 0 8px var(--api); }
+.cmd-side3 { min-height: 0; }
+.cmd-tl { position: relative; flex: 1; min-height: 120px; }
+.cmd-canvas { position: absolute; left: 0; top: 0; display: block; }
+
+.cmdc-wrap { bottom: 64px; }
+.cmdc-canvas { position: absolute; inset: 0; }

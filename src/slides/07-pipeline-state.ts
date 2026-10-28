@@ -253,7 +253,7 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
 
   // Left: OpenGL state machine.
   const swRows = SWITCHES.map((s) =>
-    h('div.psc-sw', {}, [h('span.psc-toggle', {}, [h('span.psc-knob')]), h('span.psc-name', { text: s.name }), h('code.psc-call', { text: s.call })]),
+    h('div.psc-sw', {}, [h('span.psc-toggle', {}, [h('span.psc-knob')]), h('span.psc-lbl', {}, [h('span.psc-name', { text: s.name }), h('code.psc-call', { text: s.call })])]),
   );
   const bars = Array.from({ length: 22 }, (_, i) => h(`span.psc-bar${i === 15 ? '.spike' : ''}`, { style: { height: `${i === 15 ? 92 : 22 + ((i * 37) % 19)}%` } }));
   const left = h('div.psc-pane.gl', {}, [
@@ -304,7 +304,7 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
     const H = area.clientHeight;
     if (!W || !H) return;
     const packed = step >= 2;
-    const bw = Math.min(W * 0.62, 300);
+    const bw = step >= 3 ? Math.min(W * 0.56, 270) : Math.min(W * 0.62, 300);
     const bh = Math.min(H * 0.72, 190);
     const bx = step >= 3 ? 8 : (W - bw) / 2;
     const by = 6;
@@ -324,11 +324,11 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
       if (animate) gsap.to(d, { ...p, duration: dur(0.5), delay: dynOn ? 0.5 + i * 0.12 : 0 });
       else gsap.set(d, p);
     });
-    const cx = Math.min(W - 150, bx + bw + 14);
-    gsap.set(cache, { x: cx, y: by + bh - 46, opacity: dynOn ? 1 : 0 });
+    const cx = bx + bw + 14;
+    gsap.set(cache, { x: cx, y: by + 30 + 2 * 34 + 6, opacity: dynOn ? 1 : 0 });
     gsap.set(bind, { x: bx + bw / 2, xPercent: -50, y: by + bh + 10, opacity: packed ? 1 : 0 });
     if (animate && dynOn && motion) {
-      gsap.fromTo(ghost, { x: bx + bw * 0.25, y: by + bh * 0.25, width: bw * 0.5, height: bh * 0.5, opacity: 0.8 }, { x: cx + 10, y: by + bh - 40, width: 26, height: 18, opacity: 0, duration: dur(1), delay: 0.8, ease: 'power2.in' });
+      gsap.fromTo(ghost, { x: bx + bw * 0.25, y: by + bh * 0.25, width: bw * 0.5, height: bh * 0.5, opacity: 0.8 }, { x: cx + 2, y: by + 30 + 2 * 34 + 12, width: 22, height: 18, opacity: 0, duration: dur(1), delay: 0.8, ease: 'power2.in' });
     } else gsap.set(ghost, { opacity: 0 });
   };
 
@@ -344,12 +344,15 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
       r.classList.toggle('on', on);
       const knob = r.querySelector<HTMLElement>('.psc-knob')!;
       const call = r.querySelector<HTMLElement>('.psc-call')!;
+      const name = r.querySelector<HTMLElement>('.psc-name')!;
       if (animate && flip) {
         gsap.fromTo(knob, { x: 0 }, { x: on ? 14 : 0, duration: dur(0.25), delay: i * 0.18, ease: 'back.out(2)' });
         gsap.fromTo(call, { opacity: 0, x: -6 }, { opacity: 1, x: 0, duration: dur(0.25), delay: i * 0.18 });
+        gsap.to(name, { opacity: 0, duration: dur(0.2), delay: i * 0.18 });
       } else {
         gsap.set(knob, { x: on ? 14 : 0 });
         gsap.set(call, { opacity: flip ? 1 : 0, x: 0 });
+        gsap.set(name, { opacity: flip ? 0 : 1 });
       }
     });
     block.classList.toggle('sealed', step >= 2);

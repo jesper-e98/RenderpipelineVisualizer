@@ -583,8 +583,8 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
 
   const label = (tk: Tok, k: number) => (k === 0 ? tk.src : k === 1 ? tk.ast : k === 2 ? tk.ir : tk.be);
 
-  const spawn = () => {
-    if (!geo.W) return;
+  const spawn = (): gsap.core.Timeline | null => {
+    if (!geo.W) return null;
     const tk = toks[spawnIdx % toks.length];
     const laneY = geo.y - 13 + ((spawnIdx % 3) - 1) * 30;
     spawnIdx++;
@@ -621,11 +621,18 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
     }
     if (last === 4) tl.to(el, { y: geo.top + geo.sh * 0.74, scale: 0.4, duration: dur(0.4), ease: 'power2.in' });
     tl.to(el, { opacity: 0, duration: dur(0.3) });
+    return tl;
   };
 
   const loop = () => {
     spawn();
-    spawnCall = gsap.delayedCall(step === 0 ? 0.9 : 0.6, loop);
+    spawnCall = gsap.delayedCall(interval(), loop);
+  };
+  const interval = () => (step === 0 ? 0.9 : 0.6);
+  /** Fill the chain with tokens already in flight, so a step never starts empty. */
+  const prewarm = () => {
+    const n = step === 0 ? 2 : 8;
+    for (let k = n; k >= 1; k--) spawn()?.time(k * interval(), false);
   };
 
   const clearTokens = () => {
@@ -678,7 +685,10 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
       spawnCall?.kill();
       layout();
       apply(animate);
-      if (motion) loop();
+      if (motion) {
+        prewarm();
+        loop();
+      }
       else {
         // Static picture for reduced motion: one token parked at each lit station.
         const upto = maxStation();

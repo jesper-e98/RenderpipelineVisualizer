@@ -167,9 +167,9 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
   pg.setAttribute('position', new BufferAttribute(mesh.positions, 3));
   const pColors = new Float32Array(mesh.vertexCount * 3);
   const cBase = new Color(COLORS.cyan).multiplyScalar(0.55);
-  const cOne = hdr(COLORS.green, 1.4);
-  const cTwo = hdr(COLORS.amber, 1.6);
-  const cMany = hdr(COLORS.red, 1.8);
+  const cOne = hdr(COLORS.green, 0.9);
+  const cTwo = hdr(COLORS.amber, 1.2);
+  const cMany = hdr(COLORS.red, 1.5);
   const pAttr = new BufferAttribute(pColors, 3);
   pg.setAttribute('color', pAttr);
   const pointSize = Math.max(0.018, Math.min(0.05, 0.35 / Math.sqrt(mesh.vertexCount)));
@@ -244,7 +244,7 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
 
   const P0 = { tri: 0, fetch: 0, cache: 0, order: 0 };
   // Look at the triangle from the default camera direction, but closer.
-  const baseEye = camera.position.clone().normalize().multiplyScalar(2.1);
+  const baseEye = camera.position.clone().normalize().multiplyScalar(1.65);
   camera.position.copy(baseEye);
   camera.lookAt(0, 0, 0);
   const view: StageView = {
@@ -272,7 +272,8 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
         lb.element.style.opacity = String(clamp01(P0.fetch * 3 - k));
       });
       nbGeo.setDrawRange(0, Math.round(P0.order * NB) * 3);
-      (wire.material as LineBasicMaterial).opacity = 0.1 * (1 - 0.6 * P0.cache);
+      (wire.material as LineBasicMaterial).opacity = 0.16 * (1 - 0.6 * P0.cache);
+      (points.material as PointsMaterial).size = pointSize * (1.6 + 1.2 * P0.cache);
     },
   };
   const stageHost = h('div.ia-3d');
@@ -338,12 +339,7 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
   const card1 = card(t(L('Vertex fetch – tre index, tre vertices', 'Vertex fetch – three indices, three vertices')), [
     ...fetchRows,
     h('div.hint', {
-      text: t(
-        L(
-          `adress = bas + index × stride (${layout.stride} B). Attributen avkodas enligt input layout (format + offset) och blir shaderns indata.`,
-          `address = base + index × stride (${layout.stride} B). Attributes are decoded per the input layout (format + offset) and become the shader inputs.`,
-        ),
-      ),
+      text: t(L(`adress = bas + index × stride (${layout.stride} B) · attribut avkodas enligt input layout`, `address = base + index × stride (${layout.stride} B) · attributes decoded per the input layout`)),
     }),
   ]);
 
@@ -365,7 +361,7 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
       h('span.ia-bar-v', { text: '3.00' }),
     ]),
   );
-  const STRIP = 120;
+  const STRIP = 64;
   const sStart = Math.max(0, Math.min(tri * 3 - 48, d.main.indices - STRIP));
   const stripCells: HTMLElement[] = [];
   for (let i = sStart; i < Math.min(d.main.indices, sStart + STRIP); i++) {
@@ -378,19 +374,18 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
   });
   const card2 = card(t(L('Post-transform vertex cache (FIFO-modell)', 'Post-transform vertex cache (FIFO model)')), [
     h('div.stat-row', {}, [
-      stat(d.main.misses.toLocaleString(), t(L('VS-anrop (FIFO 32)', 'VS invocations (FIFO 32)')), 'glow-cyan'),
-      stat(naive.toLocaleString(), t(L('utan cache (3 / triangel)', 'without cache (3 / triangle)'))),
+      stat(d.main.misses.toLocaleString(), t(L('VS-anrop', 'VS calls')), 'glow-cyan'),
+      stat(naive.toLocaleString(), t(L('utan cache', 'no cache'))),
       stat(d.main.acmr.toFixed(2), 'ACMR', 'glow-magenta'),
       stat(`${Math.round(d.main.hitRate * 100)} %`, t(L('träffar', 'hit rate')), 'glow-amber'),
     ]),
     h('div.ia-bars', {}, bars),
-    h('div.ia-hm-row', {}, stripCells),
-    h('div.ia-pills', {}, [h('span.hint', { text: t(L(`triangel #${tri}:`, `triangle #${tri}:`)) }), ...showHits]),
+    h('div.ia-pills', {}, [h('div.ia-hm-row', {}, stripCells), h('span.hint', { text: `#${tri}:` }), ...showHits]),
     h('div.hint', {
       text: t(
         L(
-          `ACMR = VS-anrop / trianglar. Undre gräns här: ${d.unique.toLocaleString()} unika vertices / ${d.main.triangles.toLocaleString()} trianglar. Riktiga GPU:er batchar vertices i stället för en ren FIFO, men indexordningen spelar lika stor roll.${capped ? ` (Simulerat på de första ${d.main.indices.toLocaleString()} indexen.)` : ''}`,
-          `ACMR = VS invocations / triangles. Lower bound here: ${d.unique.toLocaleString()} unique vertices / ${d.main.triangles.toLocaleString()} triangles. Real GPUs batch vertices rather than using a pure FIFO, but index order matters just as much.${capped ? ` (Simulated over the first ${d.main.indices.toLocaleString()} indices.)` : ''}`,
+          `Undre gräns = unika vertices / trianglar = ${(d.unique / Math.max(1, d.main.triangles)).toFixed(2)}. Riktiga GPU:er batchar vertices i stället för en ren FIFO – indexordningen spelar lika stor roll.${capped ? ` (Första ${d.main.indices.toLocaleString()} indexen.)` : ''}`,
+          `Lower bound = unique vertices / triangles = ${(d.unique / Math.max(1, d.main.triangles)).toFixed(2)}. Real GPUs batch vertices instead of a pure FIFO – index order matters just as much.${capped ? ` (First ${d.main.indices.toLocaleString()} indices.)` : ''}`,
         ),
       ),
     }),
@@ -526,8 +521,8 @@ const GH = 4;
 function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
   const { t } = ctx;
   const { scene, camera } = makeScene();
-  camera.position.set(0, 0.25, 4.2);
-  camera.lookAt(0, -0.1, 0);
+  camera.position.set(0, 0.35, 6.4);
+  camera.lookAt(0, 0.78, 0);
   const tex = glowTexture();
   const stars = starfield(700);
   const world = new Group();
@@ -659,7 +654,7 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
     h('div', {}, [h('span.iac-k', { text: 'STRIP' }), ...stripIdx.map((v) => h('span.iac-cell.amber', { text: String(v) }))]),
   ]);
   const caption = h('div.iac-caption');
-  const hud = h('div.iac-hud', {}, [stream, cacheRow, stripRow, counter]);
+  const hud = h('div.iac-hud', {}, [stream, h('div.iac-row2', {}, [cacheRow, stripRow, counter])]);
   const stageHost = h('div.v-fill');
   host.append(stageHost, hud, caption);
 
