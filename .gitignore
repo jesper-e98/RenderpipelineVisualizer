@@ -107,3 +107,8 @@ InitTestScene*.unity*
 
 # Auto-generated cache in Assets folder
 /[Aa]ssets/[Ss]ceneDependencyCache*
+
+# Web app (Vite / Node)
+node_modules/
+dist/
+*.tsbuildinfo
