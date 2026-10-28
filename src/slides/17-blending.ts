@@ -1,8 +1,14 @@
-import gsap from 'gsap';
-import { dur, h } from '../core/dom';
+import { AdditiveBlending, Color, DoubleSide, Group, Mesh, MeshBasicMaterial, NormalBlending, SRGBColorSpace, Shape, ShapeGeometry, Vector3 } from 'three';
+import { SHOWCASE_ROT_X } from '../core/derived';
+import { h } from '../core/dom';
 import { L } from '../core/i18n';
 import type { ApiId } from '../core/state';
-import { PixelCanvas, animateProgress } from '../views/PixelCanvas';
+import { DEFAULT_CAMERA } from '../pipeline/transform';
+import { createModelStage, secs } from '../views/ModelStage';
+import { PixelCanvas } from '../views/PixelCanvas';
+import { COLORS, label } from '../views/three-helpers';
+import { stat } from '../views/widgets';
+import { glowDot, lineSet, projectionRig, viewRayPoint, type Rig } from './14-rasterization';
 import { standardSlide } from './standard';
 import type { ApiPanelSpec, SlideContext, Visual } from './types';
 import '../styles/slides/blending.css';
@@ -22,6 +28,9 @@ interface Glass {
 const f3 = (v: number) => v.toFixed(3);
 const css = (c: readonly number[]) => `rgb(${c.map((x) => Math.round(Math.min(1, Math.max(0, x)) * 255)).join(',')})`;
 const vec = (c: readonly number[]) => `(${c.map(f3).join(', ')})`;
+const NEAR = DEFAULT_CAMERA.near;
+const FAR = DEFAULT_CAMERA.far;
+const distOf = (d: number) => (FAR * NEAR) / (FAR - d * (FAR - NEAR));
 
 /** Is (x, y) inside a rounded rectangle? */
 function inGlass(g: Glass, x: number, y: number, dx = 0): boolean {
@@ -37,6 +46,35 @@ function inGlass(g: Glass, x: number, y: number, dx = 0): boolean {
 type Mode = 'over' | 'add';
 const blendPx = (src: C3, a: number, dst: C3, mode: Mode): C3 =>
   [0, 1, 2].map((i) => Math.min(1, mode === 'over' ? src[i] * a + dst[i] * (1 - a) : src[i] * a + dst[i])) as C3;
+
+/** A glass pane in 3D: the 2D rounded rect `g` (160×100 canvas units) placed on a plane in front of the camera. */
+function glassPane(rig: Rig, g: Glass, W: number, H: number) {
+  const group = new Group();
+  rig.group.add(group);
+  const a = rig.local(g.x0, g.y1, W, H);
+  const b = rig.local(g.x1, g.y0, W, H);
+  const r = (2.5 / W) * rig.w;
+  const sh = new Shape();
+  sh.moveTo(a.x + r, a.y);
+  sh.lineTo(b.x - r, a.y);
+  sh.quadraticCurveTo(b.x, a.y, b.x, a.y + r);
+  sh.lineTo(b.x, b.y - r);
+  sh.quadraticCurveTo(b.x, b.y, b.x - r, b.y);
+  sh.lineTo(a.x + r, b.y);
+  sh.quadraticCurveTo(a.x, b.y, a.x, b.y - r);
+  sh.lineTo(a.x, a.y + r);
+  sh.quadraticCurveTo(a.x, a.y, a.x + r, a.y);
+  const color = new Color().setRGB(g.rgb[0], g.rgb[1], g.rgb[2], SRGBColorSpace);
+  const mat = new MeshBasicMaterial({ color, transparent: true, opacity: g.a, depthWrite: false, side: DoubleSide, blending: NormalBlending });
+  const mesh = new Mesh(new ShapeGeometry(sh, 6), mat);
+  const pts = sh.getPoints(6).map((p) => new Vector3(p.x, p.y, 0.002));
+  const rim = lineSet(group, pts.flatMap((p, i) => [p, pts[(i + 1) % pts.length]]), color.getHex(), 0.95);
+  group.add(mesh);
+  const lb = label(`${g.name} · α ${g.a}`, g.name === 'A' ? 'cyan' : 'magenta');
+  lb.position.set(b.x - 0.12, b.y + 0.06, 0);
+  group.add(lb);
+  return { group, mesh, mat, rim, lb };
+}
 
 /* ------------------------------------------------------------------ */
 /* Real data                                                           */
@@ -89,7 +127,6 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
       }
     return out;
   };
-  // Pixels to follow: on the model under A, and on the model under A ∩ B.
   const nearestModel = (tx: number, ty: number, need: Glass[]) => {
     let best = -1;
     let bd = Infinity;
@@ -125,268 +162,345 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
   })();
   const probeAB = nearestModel((Math.max(A.x0, B.x0) + Math.min(A.x1, B.x1)) / 2, (Math.max(A.y0, B.y0) + Math.min(A.y1, B.y1)) / 2, [A, B]);
 
-  // Step-2/3 crop: region covering the model and both panes.
+  // 2D crop: region covering the model and both panes.
   const cx0 = Math.max(0, Math.floor(Math.min(B.x0, bx0) - 2));
   const cy0 = Math.max(0, Math.floor(Math.min(A.y0, by0) - 2));
   const cx1 = Math.min(W, Math.ceil(Math.max(A.x1, bx1) + 2));
   const cy1 = Math.min(H, Math.ceil(Math.max(B.y1, by1) + 2));
   const CW = cx1 - cx0;
   const CH = cy1 - cy0;
-  const GAP = Math.max(3, Math.round(CW * 0.06));
-  const LBL = Math.max(3, Math.round(CH * 0.13));
-
+  const imgA = composite([A], 'over');
   const imgAB = composite([A, B], 'over');
   const imgBA = composite([B, A], 'over');
   const imgAdd = composite([A, B], 'add');
   const imgAddBA = composite([B, A], 'add');
 
-  const canvasHost = h('div.bl-canvas');
-  const side = h('div.bl-side');
-  const root = h('div.bl-root', {}, [canvasHost, side]);
-  host.append(root);
-  const pc = new PixelCanvas(canvasHost, W, H, 12);
-  let step = 0;
-  let slide = 0; // 0..1: pane A sliding in
-  let hover: number | null = null;
-  let cancel: (() => void) | null = null;
+  /* ---------- 3D ---------- */
+  const ms = createModelStage(host, ctx, { autoRotate: 0, shift: -0.14, eye: [1.7, 1.25, 4.4], bloom: 0.4, bloomThreshold: 0.85 });
+  // A sits closer to the camera than B; both in front of the model.
+  const rigA = projectionRig(ms, 1.55, { frustum: false, back: 0 });
+  const rigB = projectionRig(ms, 1.95, { frustum: false, back: 0 });
+  [rigA, rigB].forEach((rg) => (rg.border.visible = rg.back.visible = false));
+  const paneA = glassPane(rigA, A, W, H);
+  const paneB = glassPane(rigB, B, W, H);
+  // The probe pixel's view ray: through the panes to the model surface.
+  const rayLine = lineSet(ms.scene, [], COLORS.white, 0.5);
+  const dotA = glowDot(ms.scene, new Vector3(), COLORS.cyan, 0.13);
+  const dotB = glowDot(ms.scene, new Vector3(), COLORS.magenta, 0.13);
+  const dotD = glowDot(ms.scene, new Vector3(), COLORS.amber, 0.15);
+  const lbA = label('src A', 'cyan');
+  const lbB = label('src B', 'magenta');
+  const lbD = label('dst', 'amber');
+  lbA.position.set(0, 0.09, 0);
+  lbB.position.set(0, 0.09, 0);
+  lbD.position.set(0, 0.1, 0);
+  dotA.add(lbA);
+  dotB.add(lbB);
+  dotD.add(lbD);
+  const badge = label('', 'big');
+  badge.position.set(0, 1.25, 0.4);
+  ms.scene.add(badge);
+  const placeProbe = (p: number) => {
+    const x = (p % W) + 0.5;
+    const y = Math.floor(p / W) + 0.5;
+    const zd = r.depth[p] < 1 ? distOf(r.depth[p]) : 4.6;
+    setRay(viewRayPoint(x, y, W, H, 0.9), viewRayPoint(x, y, W, H, zd));
+    dotA.position.copy(viewRayPoint(x, y, W, H, rigA.dist));
+    dotB.position.copy(viewRayPoint(x, y, W, H, rigB.dist));
+    dotD.position.copy(viewRayPoint(x, y, W, H, zd));
+    lbD.element.textContent = r.depth[p] < 1 ? 'dst' : t(L('dst (bakgrund)', 'dst (background)'));
+  };
+  const setRay = (a: Vector3, b: Vector3) => {
+    const pos = rayLine.geometry.attributes.position;
+    pos.setXYZ(0, a.x, a.y, a.z);
+    pos.setXYZ(1, b.x, b.y, b.z);
+    pos.needsUpdate = true;
+    rayLine.geometry.setDrawRange(0, 2);
+  };
 
-  const blitCrop = (img: Uint8ClampedArray, atX: number, atY: number) => {
+  /* ---------- Panels ---------- */
+  const numbers = ms.panel('', []);
+  const numHead = numbers.querySelector('.ms-head span')!;
+  const numBody = numbers.querySelector('.ms-body')!;
+  const canvasHost = h('div.bl-zoom');
+  ms.panel(t(L(`Render target · utsnitt ${CW}×${CH}`, `Render target · crop ${CW}×${CH}`)), [canvasHost]);
+  const pc = new PixelCanvas(canvasHost, CW, CH, 6);
+  let step = 0;
+  let order = 0; // steps 2–3: 0 = A then B, 1 = B then A
+  const slide = { p: 1 }; // step 1: pane A sliding in
+  let hover: number | null = null;
+
+  const currentImg = () => {
+    if (step === 0) return base;
+    if (step === 1) return slide.p >= 1 ? imgA : composite([A], 'over', (1 - slide.p) * (W - A.x0 + 4));
+    if (step === 2) return order === 0 ? imgAB : imgBA;
+    return order === 0 ? imgAdd : imgAddBA;
+  };
+  const probeNow = () => hover ?? (step <= 1 ? probeA : step === 3 && probeBg >= 0 ? probeBg : probeAB);
+  const draw = () => {
+    pc.clear();
+    pc.grid(0.04);
+    const img = currentImg();
     const tmp = document.createElement('canvas');
     tmp.width = W;
     tmp.height = H;
     tmp.getContext('2d')!.putImageData(new ImageData(new Uint8ClampedArray(img), W, H), 0, 0);
-    const [x, y] = pc.px(atX, atY);
+    const [x, y] = pc.px(0, 0);
     pc.ctx.save();
     pc.ctx.imageSmoothingEnabled = false;
     pc.ctx.drawImage(tmp, cx0, cy0, CW, CH, x, y, CW * pc.cell, CH * pc.cell);
     pc.ctx.restore();
-  };
-  const rim = (g: Glass, ox: number, oy: number, dx = 0) => {
-    const [x0, y0] = pc.px(g.x0 + ox + dx, g.y0 + oy);
-    const [x1, y1] = pc.px(g.x1 + ox + dx, g.y1 + oy);
-    const c = pc.ctx;
-    c.save();
-    c.strokeStyle = g.css;
-    c.shadowColor = g.css;
-    c.shadowBlur = 12;
-    c.lineWidth = 1.5;
-    c.beginPath();
-    c.roundRect(x0, y0, x1 - x0, y1 - y0, 2.5 * pc.cell);
-    c.stroke();
-    c.restore();
-  };
-  const mark = (p: number, ox: number, oy: number) => {
-    const [x, y] = pc.px((p % W) + ox, Math.floor(p / W) + oy);
-    const c = pc.ctx;
-    c.save();
-    c.strokeStyle = '#fff';
-    c.shadowColor = '#fff';
-    c.shadowBlur = 10;
-    c.lineWidth = 2;
-    c.strokeRect(x - 2, y - 2, pc.cell + 4, pc.cell + 4);
-    c.restore();
-  };
-
-  const draw = () => {
-    pc.clear();
-    pc.grid(0.04);
-    if (step <= 1) {
-      const dx = step === 0 ? 0 : (1 - slide) * (W - A.x0 + 4);
-      pc.image(step === 0 ? base : composite([A], 'over', dx));
-      if (step === 1) rim(A, 0, 0, dx);
-      mark(hover ?? probeA, 0, 0);
-    } else {
-      const pair = step === 2 ? [imgAB, imgBA] : [imgAdd, imgAddBA];
-      const names = step === 2 ? [t(L('först A, sedan B', 'A first, then B')), t(L('först B, sedan A', 'B first, then A'))] : [t(L('additiv: A, sedan B', 'additive: A, then B')), t(L('additiv: B, sedan A', 'additive: B, then A'))];
-      pair.forEach((img, i) => {
-        const ox = i * (CW + GAP);
-        blitCrop(img, ox, LBL);
-        const order = i === 0 ? [A, B] : [B, A];
-        order.forEach((g) => rim(g, ox - cx0, LBL - cy0));
-        pc.text(names[i], ox + CW / 2, LBL / 2, '#e8ebff', 12, 'center');
-        mark(hover ?? (step === 3 && probeBg >= 0 ? probeBg : probeAB), ox - cx0, LBL - cy0);
-      });
-    }
+    const p = probeNow();
+    const [mx, my] = pc.px((p % W) - cx0, Math.floor(p / W) - cy0);
+    pc.ctx.save();
+    pc.ctx.strokeStyle = '#fff';
+    pc.ctx.shadowColor = '#fff';
+    pc.ctx.shadowBlur = 10;
+    pc.ctx.lineWidth = 2;
+    pc.ctx.strokeRect(mx - 2, my - 2, pc.cell + 4, pc.cell + 4);
+    pc.ctx.restore();
   };
   pc.onResize(draw);
 
-  const sw = (c: readonly number[], label: string, a?: number) =>
-    `<div class="bl-sw"><i style="background:${css(c)}${a !== undefined ? `;opacity:${0.35 + a * 0.65}` : ''}"></i><span>${label}${a !== undefined ? ` <em>α ${a}</em>` : ''}</span><b>${vec(c)}</b></div>`;
-  const row = (k: string, v: string, cls = '') => `<div class="bl-row"><span>${k}</span><b class="${cls}">${v}</b></div>`;
-
+  const sw = (c: readonly number[], lbl: string, a?: number) =>
+    `<div class="bl-sw"><i style="background:${css(c)}${a !== undefined ? `;opacity:${0.35 + a * 0.65}` : ''}"></i><span>${lbl}${a !== undefined ? ` <em>α ${a}</em>` : ''}</span><b>${vec(c)}</b></div>`;
+  const statRow = (items: [string, string, string?][]) => `<div class="stat-row">${items.map(([v, k, c]) => stat(v, k, c ?? '').outerHTML).join('')}</div>`;
+  const titles = [L('Ogenomskinligt pass', 'Opaque pass'), L('Alfablandning', 'Alpha blending'), L('Ordningen spelar roll', 'Order matters'), L('Additiv blandning', 'Additive blending')];
   const updateSide = () => {
-    const p = hover ?? (step <= 1 ? probeA : step === 3 && probeBg >= 0 ? probeBg : probeAB);
+    const p = probeNow();
     const px = p % W;
     const py = Math.floor(p / W);
     const dst = dstAt(p);
+    numHead.textContent = t(titles[step]);
     const head = `<div class="bl-px">pixel (${px}, ${py})${r.depth[p] < 1 ? '' : ` · ${t(L('bakgrund', 'background'))}`}</div>`;
+    const out8 = (c: readonly number[]) => c.map((v) => Math.round(v * 255)).join(', ');
+    let html = '';
     if (step === 0) {
-      side.innerHTML = `<h4>${t(L('Ogenomskinligt pass', 'Opaque pass'))}</h4>${head}
-        ${sw(dst, 'dst')}
+      html = `${statRow([['off', t(L('blending', 'blending'))], [out8(dst), 'out = src (RGBA8)', 'glow-amber']])}${head}
+        ${sw(dst, 'src → out')}
         <div class="bl-eq">blend = off → <b>out = src</b></div>
-        <p class="bl-note">${t(L('Fragmentets färg ersätter det som låg i render targeten. Ingen läsning av dst behövs – snabbast.', 'The fragment\'s color replaces what was in the render target. No read of dst is needed – fastest.'))}</p>`;
+        <p class="bl-note">${t(L('Varje fragment skriver bara över det som låg i render targeten – modellen "målas" över bakgrunden. Ingen läsning av dst behövs, och djuptestet löser ordningen.', 'Each fragment simply overwrites what was in the render target – the model is "painted" over the background. No read of dst is needed, and the depth test sorts out order.'))}</p>`;
     } else if (step === 1) {
       const inside = inGlass(A, px, py);
       const out = inside ? blendPx(A.rgb, A.a, dst, 'over') : dst;
-      side.innerHTML = `<h4>${t(L('Alfablandning', 'Alpha blending'))}</h4>${head}
+      html = `${statRow([[String(A.a), 'α (A)', 'glow-cyan'], [out8(out), t(L('lagras (RGBA8)', 'stored (RGBA8)')), 'glow-amber']])}${head}
         ${sw(A.rgb, 'src', A.a)}
         ${sw(dst, 'dst')}
         <div class="bl-eq">out = src·α + dst·(1 − α)</div>
         ${inside ? [0, 1, 2].map((i) => `<div class="bl-ch"><span>${'RGB'[i]}</span>${f3(A.rgb[i])}·${A.a} + ${f3(dst[i])}·${(1 - A.a).toFixed(2)} = <b>${f3(out[i])}</b></div>`).join('') : `<p class="bl-note">${t(L('Pixeln ligger utanför glaset – dst lämnas orörd.', 'The pixel is outside the glass – dst is left untouched.'))}</p>`}
-        ${sw(out, 'out')}
-        ${row(t(L('lagras (RGBA8)', 'stored (RGBA8)')), out.map((c) => Math.round(c * 255)).join(', '), 'glow-cyan')}`;
+        ${sw(out, 'out')}`;
     } else {
       const mode: Mode = step === 2 ? 'over' : 'add';
-      const apply = (order: Glass[]) => order.reduce<C3>((c, g) => (inGlass(g, px, py) ? blendPx(g.rgb, g.a, c, mode) : c), dst);
+      const apply = (ord: Glass[]) => ord.reduce<C3>((c, g) => (inGlass(g, px, py) ? blendPx(g.rgb, g.a, c, mode) : c), dst);
       const ab = apply([A, B]);
       const ba = apply([B, A]);
       const same = ab.every((v, i) => Math.round(v * 255) === Math.round(ba[i] * 255));
-      side.innerHTML = `<h4>${step === 2 ? t(L('Ordningen spelar roll', 'Order matters')) : t(L('Additiv blandning', 'Additive blending'))}</h4>${head}
+      html = `${statRow([[order === 0 ? 'A → B' : 'B → A', t(L('ritordning nu', 'draw order now')), order === 0 ? 'glow-cyan' : 'glow-magenta'], [same ? '=' : '≠', 'A→B vs B→A', same ? 'c-idx' : 'dp-neg']])}${head}
         <div class="bl-eq">${step === 2 ? 'out = src·α + dst·(1 − α)' : 'out = src·α + dst'}</div>
         ${sw(A.rgb, 'A', A.a)}${sw(B.rgb, 'B', B.a)}${sw(dst, 'dst')}
-        ${sw(ab, t(L('A→B', 'A→B')))}
-        ${sw(ba, t(L('B→A', 'B→A')))}
+        <div class="bl-pair ${order === 0 ? 'on0' : 'on1'}">${sw(ab, 'A→B')}${sw(ba, 'B→A')}</div>
         <div class="bl-verdict ${same ? 'ok' : 'bad'}">${same ? t(L('samma resultat – ordningsoberoende', 'same result – order independent')) : t(L('olika resultat – sortera bakifrån och fram!', 'different results – sort back to front!'))}</div>
-        <p class="bl-note">${step === 2 ? t(L('Rita ogenomskinligt först, sedan genomskinligt sorterat bakifrån och fram med depth write av.', 'Draw opaque first, then transparent sorted back to front with depth write off.')) : t(L('(SRC_ALPHA, ONE) adderar ljus – bra för partiklar och glöd. Summan klampas till 1 i ett UNORM-mål.', '(SRC_ALPHA, ONE) adds light – good for particles and glow. The sum is clamped to 1 in a UNORM target.'))}</p>`;
+        <p class="bl-note">${step === 2 ? t(L('B ligger längre bort – rätt ordning är B först, sedan A. Rita ogenomskinligt först, sedan genomskinligt sorterat bakifrån och fram, med depth write av.', 'B is farther away – the right order is B first, then A. Draw opaque first, then transparent sorted back to front, with depth writes off.')) : t(L('(SRC_ALPHA, ONE) adderar ljus – bra för partiklar och glöd. Summan klampas till 1 i ett UNORM-mål.', '(SRC_ALPHA, ONE) adds light – good for particles and glow. The sum is clamped to 1 in a UNORM target.'))}</p>`;
     }
+    numBody.innerHTML = html;
   };
 
   pc.canvas.addEventListener('mousemove', (e) => {
     const b = pc.canvas.getBoundingClientRect();
-    let cx = (e.clientX - b.left - pc.ox) / pc.cell;
-    let cy = (e.clientY - b.top - pc.oy) / pc.cell;
-    if (step >= 2) {
-      cy -= LBL;
-      if (cx >= CW + GAP) cx -= CW + GAP;
-      if (cx < 0 || cx >= CW || cy < 0 || cy >= CH) return;
-      cx += cx0;
-      cy += cy0;
-    }
-    const x = Math.floor(cx);
-    const y = Math.floor(cy);
-    if (x < 0 || y < 0 || x >= W || y >= H) return;
+    const x = Math.floor((e.clientX - b.left - pc.ox) / pc.cell) + cx0;
+    const y = Math.floor((e.clientY - b.top - pc.oy) / pc.cell) + cy0;
+    if (x < cx0 || y < cy0 || x >= cx1 || y >= cy1) return;
     const np = y * W + x;
     if (np === hover) return;
     hover = np;
+    placeProbe(np);
     draw();
     updateSide();
   });
   pc.canvas.addEventListener('mouseleave', () => {
     hover = null;
+    placeProbe(probeNow());
     draw();
     updateSide();
   });
 
+  const applyOrder = () => {
+    paneA.mesh.renderOrder = paneA.rim.renderOrder = order === 0 ? 1 : 2;
+    paneB.mesh.renderOrder = paneB.rim.renderOrder = order === 0 ? 2 : 1;
+    badge.element.textContent = `${t(L('ritordning', 'draw order'))}: ${order === 0 ? 'A → B' : 'B → A'}${step === 2 ? (order === 1 ? ' ✓' : ' ✗') : ''}`;
+    badge.element.style.color = order === 0 ? 'var(--cyan)' : 'var(--magenta)';
+    draw();
+    updateSide();
+  };
+  let phaseT = 0;
+  let now = 0;
+  ms.onFrame((time) => {
+    now = time;
+    if (step < 2) return;
+    const o = Math.floor((time - phaseT) / 2.6) % 2;
+    if (o !== order) {
+      order = o;
+      applyOrder();
+    }
+  });
+  const slideOffset = () => (1 - slide.p) * rigA.w * 0.9;
+
   return {
     show(s, animate) {
-      cancel?.();
-      cancel = null;
       step = s;
       hover = null;
-      slide = 1;
-      const cols = s >= 2 ? CW * 2 + GAP : W;
-      const rows = s >= 2 ? CH + LBL : H;
-      if (pc.cols !== cols || pc.rows !== rows) {
-        pc.cols = cols;
-        pc.rows = rows;
-        pc.resize();
-      }
-      if (animate && s === 1) {
-        slide = 0;
-        cancel = animateProgress(dur(1.1), (p) => {
-          slide = 1 - Math.pow(1 - p, 3);
-          draw();
+      order = 0;
+      phaseT = now;
+      paneA.group.visible = s >= 1;
+      paneB.group.visible = s >= 2;
+      dotA.visible = s >= 1;
+      dotB.visible = s >= 2;
+      badge.visible = s >= 2;
+      const blending = s === 3 ? AdditiveBlending : NormalBlending;
+      [paneA.mat, paneB.mat].forEach((m) => {
+        m.blending = blending;
+        m.needsUpdate = true;
+      });
+      if (s === 0) ms.sweep('shaded', 'ghost', secs(animate, 1.8));
+      else ms.setMode('shaded', 0, 0);
+      slide.p = s === 1 && animate ? 0 : 1;
+      paneA.group.position.x = slideOffset();
+      if (s === 1 && animate)
+        ms.tween(slide, {
+          p: 1,
+          duration: secs(animate, 1.2),
+          ease: 'power3.out',
+          onUpdate: () => {
+            paneA.group.position.x = slideOffset();
+            draw();
+          },
         });
-      }
-      draw();
-      updateSide();
-      if (animate) side.animate([{ opacity: 0, transform: 'translateX(10px)' }, { opacity: 1, transform: 'none' }], { duration: dur(0.4) * 1000, easing: 'ease-out' });
+      placeProbe(probeNow());
+      applyOrder();
     },
     destroy() {
-      cancel?.();
       pc.destroy();
+      ms.destroy();
     },
   };
 }
 
 /* ------------------------------------------------------------------ */
-/* Concept: colored glass sliding over a scene                         */
+/* Concept: glass copies of the model overlapping, swapping order      */
 /* ------------------------------------------------------------------ */
 function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
   const { t } = ctx;
-  const scene = h('div.blc-scene');
-  const object = h('div.blc-object');
-  const panes = [
-    { el: h('div.blc-pane.cyan', {}, [h('span', { text: 'A · α 0.5' })]), rgb: [56, 225, 255] },
-    { el: h('div.blc-pane.magenta', {}, [h('span', { text: 'B · α 0.5' })]), rgb: [255, 63, 210] },
-  ];
-  const opaque = h('div.blc-pane.opaque', {}, [h('span', { text: 'α 1.0' })]);
-  const readout = h('div.blc-readout');
-  const caption = h('div.bl-caption');
-  scene.append(object, opaque, ...panes.map((p) => p.el), readout);
-  host.append(scene, caption);
-  let tl: gsap.core.Timeline | null = null;
+  const ms = createModelStage(host, ctx, { autoRotate: 0, eye: [1.3, 1.1, 4.0], bloom: 0.55, bloomThreshold: 0.85 });
+  const mk = (tint: C3, pos: [number, number, number], glass: boolean) => {
+    const mat = ms.material.clone() as typeof ms.material;
+    mat.uniforms.uBaseColor.value.setRGB(...tint, SRGBColorSpace);
+    if (glass) {
+      mat.transparent = true;
+      mat.depthWrite = false;
+      mat.uniforms.uOpacity.value = 0.5;
+    }
+    const g = new Group();
+    g.position.set(...pos);
+    g.scale.setScalar(0.62);
+    const m = new Mesh(ms.layers.solid.geometry, mat);
+    g.add(m);
+    ms.scene.add(g);
+    return { g, m, mat, home: new Vector3(...pos) };
+  };
+  const opaque = mk([0.61, 0.48, 1.0], [0.55, 0.05, 0.85], false);
+  const ga = mk([0.22, 0.88, 1.0], [0.5, 0.12, 0.8], true);
+  const gb = mk([1.0, 0.25, 0.82], [-0.45, -0.08, 1.05], true);
+  const la = label('A · α 0.5', 'cyan');
+  la.position.set(0.2, 1.25, 0);
+  ga.g.add(la);
+  const lb = label('B · α 0.5', 'magenta');
+  lb.position.set(-0.2, -1.25, 0);
+  gb.g.add(lb);
+  const lo = label('α 1.0', 'violet');
+  lo.position.set(0, 1.25, 0);
+  opaque.g.add(lo);
+  const badge = label('', 'big');
+  badge.position.set(0, 1.3, 0.5);
+  ms.scene.add(badge);
 
-  const objRgb = [255, 140, 64];
-  const over = (src: number[], a: number, dst: number[]) => src.map((s, i) => Math.round(s * a + dst[i] * (1 - a)));
-  const add = (src: number[], a: number, dst: number[]) => src.map((s, i) => Math.min(255, Math.round(s * a + dst[i])));
-  const chip = (c: number[], label: string) => `<div><i style="background:rgb(${c.join(',')})"></i>${label} <b>(${c.join(', ')})</b></div>`;
-
+  const readout = h('div.blc-readout3');
+  const readPanel = ms.panel(t(L('Pixel i överlappet', 'Pixel in the overlap')), [readout]);
+  const caption = ms.panel(t(L('Vad händer', 'What happens')), [h('p.bl-capt')], { side: 'bottom' });
+  const text = caption.querySelector('.bl-capt')!;
   const captions = [
-    L('Ogenomskinligt (α = 1): det nya fragmentet ersätter helt det som låg under.', 'Opaque (α = 1): the new fragment completely replaces what was underneath.'),
+    L('Ogenomskinligt (α = 1): den lila kopian ersätter helt det som låg under.', 'Opaque (α = 1): the purple copy completely replaces what was underneath.'),
     L('Genomskinligt glas: <code>src·α + dst·(1−α)</code> – lite av båda.', 'Transparent glass: <code>src·α + dst·(1−α)</code> – a bit of both.'),
-    L('Byt ordning på glasen – överlappet får en annan färg. Därför sorteras genomskinligt bakifrån och fram.', 'Swap the order of the panes – the overlap changes color. That is why transparency is sorted back to front.'),
+    L('Två glas som byter ritordning – överlappet får en annan färg. Därför sorteras genomskinligt bakifrån och fram.', 'Two glasses swapping draw order – the overlap changes color. That is why transparency is sorted back to front.'),
     L('Additivt (<code>src·α + dst</code>): ljuset summeras och blir ljusare – och ordningen spelar ingen roll.', 'Additive (<code>src·α + dst</code>): light adds up and gets brighter – and order does not matter.'),
   ];
+  const objRgb = [255, 140, 64];
+  const cyan = [56, 225, 255];
+  const mag = [255, 63, 210];
+  const over = (src: number[], a: number, dst: number[]) => src.map((v, i) => Math.round(v * a + dst[i] * (1 - a)));
+  const add = (src: number[], a: number, dst: number[]) => src.map((v, i) => Math.min(255, Math.round(v * a + dst[i])));
+  const chip = (c: number[], lbl: string, on = false) => `<div class="${on ? 'on' : ''}"><i style="background:rgb(${c.join(',')})"></i>${lbl} <b>(${c.join(', ')})</b></div>`;
 
-  const layout = (step: number, animate: boolean) => {
-    tl?.kill();
-    tl = gsap.timeline();
-    const d = (s: number) => (animate ? dur(s) : 0);
-    scene.dataset.step = String(step);
-    delete readout.dataset.on;
-    gsap.set([opaque, ...panes.map((p) => p.el)], { clearProps: 'zIndex' });
-    tl.to(opaque, { xPercent: step === 0 ? 0 : 140, opacity: step === 0 ? 1 : 0, duration: d(0.7), ease: 'power3.inOut' }, 0);
-    tl.to(panes[0].el, { xPercent: step >= 1 ? 0 : 160, opacity: step >= 1 ? 1 : 0, duration: d(0.8), ease: 'power3.out' }, 0);
-    tl.to(panes[1].el, { xPercent: step >= 2 ? 0 : -160, opacity: step >= 2 ? 1 : 0, duration: d(0.8), ease: 'power3.out' }, 0.1);
-    panes.forEach((p) => (p.el.style.mixBlendMode = step === 3 ? 'plus-lighter' : 'normal'));
-    const bg = [12, 16, 40];
-    if (step === 0) readout.innerHTML = chip(objRgb, 'dst') + chip([155, 123, 255], 'src α=1') + chip([155, 123, 255], 'out');
-    else if (step === 1) readout.innerHTML = chip(objRgb, 'dst') + chip(panes[0].rgb, 'src α=0.5') + chip(over(panes[0].rgb, 0.5, objRgb), 'out');
-    else if (step === 2) {
-      const ab = over(panes[1].rgb, 0.5, over(panes[0].rgb, 0.5, objRgb));
-      const ba = over(panes[0].rgb, 0.5, over(panes[1].rgb, 0.5, objRgb));
-      readout.innerHTML = chip(ab, 'A → B') + chip(ba, 'B → A');
-      // Keep swapping which pane is on top.
-      const swap = gsap.timeline({ repeat: -1, delay: d(0.9) });
-      swap.call(() => {
-        panes[0].el.style.zIndex = '3';
-        panes[1].el.style.zIndex = '4';
-        readout.dataset.on = '0';
-      });
-      swap.to({}, { duration: 2.2 });
-      swap.call(() => {
-        panes[0].el.style.zIndex = '4';
-        panes[1].el.style.zIndex = '3';
-        readout.dataset.on = '1';
-      });
-      swap.to({}, { duration: 2.2 });
-      tl.add(swap, 0);
-    } else {
-      // On the background (the overlap on the object saturates to white).
-      readout.innerHTML =
-        chip(add(panes[1].rgb, 0.5, add(panes[0].rgb, 0.5, bg)), t(L('A, sedan B', 'A, then B'))) +
-        chip(add(panes[0].rgb, 0.5, add(panes[1].rgb, 0.5, bg)), t(L('B, sedan A', 'B, then A'))) +
-        chip(add(panes[1].rgb, 0.5, add(panes[0].rgb, 0.5, objRgb)), t(L('på objektet (klampat)', 'on the object (clamped)')));
+  let step = 0;
+  let order = 0;
+  let phaseT = 0;
+  let now = 0;
+  const apply = () => {
+    ga.m.renderOrder = order === 0 ? 1 : 2;
+    gb.m.renderOrder = order === 0 ? 2 : 1;
+    if (step >= 2) {
+      badge.element.textContent = `${t(L('ritordning', 'draw order'))}: ${order === 0 ? 'A → B' : 'B → A'}`;
+      badge.element.style.color = order === 0 ? 'var(--cyan)' : 'var(--magenta)';
     }
-    caption.innerHTML = t(captions[step]);
-    if (animate) caption.animate([{ opacity: 0, transform: 'translateY(8px)' }, { opacity: 1, transform: 'none' }], { duration: dur(0.4) * 1000, easing: 'ease-out' });
+    const bg = [12, 16, 40];
+    if (step === 0) readout.innerHTML = chip(objRgb, 'dst') + chip([155, 123, 255], 'src α=1') + chip([155, 123, 255], 'out', true);
+    else if (step === 1) readout.innerHTML = chip(objRgb, 'dst') + chip(cyan, 'src α=0.5') + chip(over(cyan, 0.5, objRgb), 'out', true);
+    else if (step === 2) readout.innerHTML = chip(over(mag, 0.5, over(cyan, 0.5, objRgb)), 'A → B', order === 0) + chip(over(cyan, 0.5, over(mag, 0.5, objRgb)), 'B → A', order === 1);
+    else
+      readout.innerHTML =
+        chip(add(mag, 0.5, add(cyan, 0.5, bg)), t(L('A, sedan B', 'A, then B')), order === 0) +
+        chip(add(cyan, 0.5, add(mag, 0.5, bg)), t(L('B, sedan A', 'B, then A')), order === 1) +
+        chip(add(mag, 0.5, add(cyan, 0.5, objRgb)), t(L('på objektet (klampat)', 'on the object (clamped)')));
   };
+  ms.onFrame((time, dt) => {
+    now = time;
+    ms.pivot.rotation.y += dt * 0.25;
+    [opaque, ga, gb].forEach((c) => c.g.rotation.set(SHOWCASE_ROT_X, ms.pivot.rotation.y + 0.8, 0));
+    if (step < 2) return;
+    const o = Math.floor((time - phaseT) / 2.2) % 2;
+    if (o !== order) {
+      order = o;
+      apply();
+    }
+  });
 
   return {
-    show: layout,
+    show(s, animate) {
+      step = s;
+      order = 0;
+      phaseT = now;
+      text.innerHTML = t(captions[s]);
+      if (animate) caption.animate([{ opacity: 0.3 }, { opacity: 1 }], { duration: secs(animate, 0.4) * 1000 });
+      const slideIn = (c: { g: Group; home: Vector3 }, on: boolean, from: number) => {
+        const x = on ? c.home.x : c.home.x + from;
+        c.g.visible = true;
+        if (!animate) {
+          c.g.position.x = x;
+          c.g.visible = on;
+        } else ms.tween(c.g.position, { x, duration: secs(animate, 0.9), ease: 'power3.out', onComplete: () => void (c.g.visible = on) });
+      };
+      slideIn(opaque, s === 0, 2.4);
+      slideIn(ga, s >= 1, 2.4);
+      slideIn(gb, s >= 2, -2.4);
+      [ga.mat, gb.mat].forEach((m) => {
+        m.blending = s === 3 ? AdditiveBlending : NormalBlending;
+        m.needsUpdate = true;
+      });
+      badge.visible = s >= 2;
+      readPanel.style.display = '';
+      apply();
+    },
     destroy() {
-      tl?.kill();
+      ms.destroy();
     },
   };
 }

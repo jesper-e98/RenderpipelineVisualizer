@@ -1,8 +1,14 @@
 import gsap from 'gsap';
+import { AdditiveBlending, BackSide, BoxGeometry, EdgesGeometry, LineBasicMaterial, LineSegments, Mesh, MeshBasicMaterial, Vector3, type Texture } from 'three';
+import type { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import { dur, h, reducedMotion } from '../core/dom';
 import { L, type Text } from '../core/i18n';
 import type { ApiId } from '../core/state';
-import { card, stat } from '../views/widgets';
+import { DEFAULT_CAMERA } from '../pipeline/transform';
+import { createModelStage, secs, type ModelStage } from '../views/ModelStage';
+import { textSprite } from '../views/ThreeStage';
+import { COLORS, label } from '../views/three-helpers';
+import { stat } from '../views/widgets';
 import '../styles/slides/pipeline-state.css';
 import { standardSlide } from './standard';
 import type { ApiPanelSpec, SlideContext, Visual } from './types';
@@ -17,6 +23,8 @@ interface StateRow {
   value: Text;
   spell: Record<ApiId, string>;
   kind: Record<ApiId, Kind>;
+  /** GL default value, so the app never has to call it. */
+  glDefault?: boolean;
 }
 
 /** The pipeline state this app really uses, spelled out in each API. */
@@ -63,6 +71,13 @@ function stateRows(ctx: SlideContext): StateRow[] {
       value: L('moturs (CCW)', 'counter-clockwise'),
       spell: { opengl: 'glFrontFace(GL_CCW)', vulkan: 'frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE', d3d12: 'FrontCounterClockwise = TRUE' },
       kind: B,
+    },
+    {
+      what: L('Polygonläge', 'Polygon mode'),
+      value: L('fyllt', 'fill'),
+      spell: { opengl: 'glPolygonMode(GL_FRONT_AND_BACK, GL_FILL)   // default', vulkan: 'polygonMode = VK_POLYGON_MODE_FILL', d3d12: 'FillMode = D3D12_FILL_MODE_SOLID' },
+      kind: B,
+      glDefault: true,
     },
     {
       what: L('Djuptest', 'Depth test'),
@@ -140,243 +155,560 @@ const KIND_LABEL: Record<Kind, Text> = {
 };
 
 /* ------------------------------------------------------------------ */
-/* Real data: the state object table                                   */
+/* The 3D scene: the model with live pipeline state (both modes)       */
+/* ------------------------------------------------------------------ */
+const API_HEX: Record<ApiId, number> = { opengl: 0x5aa9e6, vulkan: 0xff4d64, d3d12: 0x6cd04a };
+const CSS_HEX = (c: number) => '#' + c.toString(16).padStart(6, '0');
+
+interface Look {
+  cull: 'back' | 'front' | 'none';
+  depth: boolean;
+  wire: boolean;
+  blend: number | false;
+}
+/** The state this app really draws with. */
+const GOOD: Look = { cull: 'back', depth: true, wire: false, blend: false };
+/** What an earlier draw (a debug overlay, a UI pass) can leave behind in a GL context. */
+const LEFTOVER: Look = { cull: 'none', depth: false, wire: true, blend: 0.45 };
+/** A second, wireframe "debug" pipeline to switch to on the Vulkan/D3D12 step. */
+const DEBUG: Look = { cull: 'none', depth: true, wire: true, blend: false };
+
+interface Demo {
+  /** Row in stateRows() that the demo is about. */
+  row: number;
+  bad: Partial<Look>;
+  /** Pull the triangles apart a little so the back faces can be seen through the gaps. */
+  explode?: number;
+  spell: Record<ApiId, [string, string]>;
+  plain: [Text, Text];
+}
+
+/** Step 0: one state at a time is switched to a wrong value and back, on the model. */
+const DEMOS: Demo[] = [
+  {
+    row: 3,
+    bad: { cull: 'none' },
+    explode: 0.22,
+    spell: {
+      opengl: ['glDisable(GL_CULL_FACE)', 'glEnable(GL_CULL_FACE)'],
+      vulkan: ['cullMode = VK_CULL_MODE_NONE', 'cullMode = VK_CULL_MODE_BACK_BIT'],
+      d3d12: ['CullMode = D3D12_CULL_MODE_NONE', 'CullMode = D3D12_CULL_MODE_BACK'],
+    },
+    plain: [L('culling av – baksidorna ritas också (röda)', 'culling off – back faces are drawn too (red)'), L('culling på – baksidorna slängs', 'culling on – back faces are dropped')],
+  },
+  {
+    row: 4,
+    bad: { cull: 'front' },
+    spell: {
+      opengl: ['glFrontFace(GL_CW)', 'glFrontFace(GL_CCW)'],
+      vulkan: ['frontFace = VK_FRONT_FACE_CLOCKWISE', 'frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE'],
+      d3d12: ['FrontCounterClockwise = FALSE', 'FrontCounterClockwise = TRUE'],
+    },
+    plain: [L('fel varvordning – fel sida slängs, insidan syns', 'wrong winding – the wrong side is dropped, you see the inside'), L('moturs = framsida', 'counter-clockwise = front')],
+  },
+  {
+    row: 5,
+    bad: { wire: true },
+    spell: {
+      opengl: ['glPolygonMode(GL_FRONT_AND_BACK, GL_LINE)', 'glPolygonMode(GL_FRONT_AND_BACK, GL_FILL)'],
+      vulkan: ['polygonMode = VK_POLYGON_MODE_LINE', 'polygonMode = VK_POLYGON_MODE_FILL'],
+      d3d12: ['FillMode = D3D12_FILL_MODE_WIREFRAME', 'FillMode = D3D12_FILL_MODE_SOLID'],
+    },
+    plain: [L('polygonläge: linjer', 'polygon mode: lines'), L('polygonläge: fyllt', 'polygon mode: filled')],
+  },
+  {
+    row: 6,
+    bad: { depth: false, cull: 'none' },
+    spell: {
+      opengl: ['glDisable(GL_DEPTH_TEST) + no culling', 'glEnable(GL_DEPTH_TEST)'],
+      vulkan: ['depthTestEnable = VK_FALSE + CULL_MODE_NONE', 'depthTestEnable = VK_TRUE'],
+      d3d12: ['DepthEnable = FALSE + CULL_MODE_NONE', 'DepthEnable = TRUE'],
+    },
+    plain: [L('inget djuptest – ritordningen avgör vad som syns', 'no depth test – draw order decides what shows'), L('djuptest LESS – närmast vinner', 'depth test LESS – the nearest wins')],
+  },
+  {
+    row: 8,
+    bad: { blend: 0.45 },
+    spell: {
+      opengl: ['glEnable(GL_BLEND)', 'glDisable(GL_BLEND)'],
+      vulkan: ['blendEnable = VK_TRUE', 'blendEnable = VK_FALSE'],
+      d3d12: ['BlendEnable = TRUE', 'BlendEnable = FALSE'],
+    },
+    plain: [L('blending på – modellen blir genomskinlig', 'blending on – the model turns see-through'), L('blending av – opak', 'blending off – opaque')],
+  },
+];
+
+/** Step 1: the GL calls that repair the leftover state, one at a time. */
+const GL_SEQ: { call: string; look: Partial<Look> }[] = [
+  { call: 'glPolygonMode(GL_FRONT_AND_BACK, GL_FILL)', look: { wire: false } },
+  { call: 'glDisable(GL_BLEND)', look: { blend: false } },
+  { call: 'glEnable(GL_DEPTH_TEST); glDepthFunc(GL_LESS)', look: { depth: true } },
+  { call: 'glEnable(GL_CULL_FACE); glCullFace(GL_BACK)', look: { cull: 'back' } },
+];
+
+const CHIPS: Record<ApiId | 'plain', string[]> = {
+  vulkan: ['vert + frag', 'TRIANGLE_LIST', 'CULL_MODE_BACK_BIT', 'COUNTER_CLOCKWISE', 'POLYGON_MODE_FILL', 'COMPARE_OP_LESS', 'blendEnable = FALSE', 'R8G8B8A8_SRGB', 'D32_SFLOAT', 'SAMPLE_COUNT_1_BIT'],
+  d3d12: ['VS + PS (DXIL)', 'TOPOLOGY_TYPE_TRIANGLE', 'CULL_MODE_BACK', 'FrontCounterClockwise', 'FILL_MODE_SOLID', 'COMPARISON_FUNC_LESS', 'BlendEnable = FALSE', 'R8G8B8A8_UNORM_SRGB', 'D32_FLOAT', 'SampleDesc { 1, 0 }'],
+  opengl: ['shaders', 'triangle list', 'cull back', 'CCW', 'fill', 'depth LESS', 'blend off', 'RGBA8 sRGB', 'D32F', '1 sample'],
+  plain: ['shaders', 'topology', 'cull back', 'CCW', 'fill', 'depth LESS', 'blend off', 'color format', 'depth format', 'samples'],
+};
+
+interface StateScene {
+  ms: ModelStage;
+  /** Called by show(): which step, animated or not. Hooks let the visual update its panels. */
+  show(step: number, animate: boolean): void;
+  destroy(): void;
+}
+
+interface Hooks {
+  /** Step 0 demo i is showing its wrong (bad = true) or right value. */
+  demo?: (i: number, bad: boolean) => void;
+  /** Step 1: GL call k (−1 = leftover state, GL_SEQ.length = the draw) has run. */
+  glCall?: (k: number) => void;
+  callout: (step: number, k: number, bad: boolean) => string;
+}
+
+function stateScene(host: HTMLElement, ctx: SlideContext, concept: boolean, hooks: Hooks): StateScene {
+  const api = ctx.state.api;
+  const apiC = API_HEX[api];
+  const motion = !reducedMotion();
+  const ms = createModelStage(host, ctx, { shift: -0.13, autoRotate: concept ? 0.22 : 0, bloom: 0.55, bloomThreshold: 0.85 });
+  ms.overlay.classList.add('ps-ms');
+
+  // Back faces as an additive red x-ray: what gets rasterized (and then hidden) when culling is off.
+  const xrayMat = new MeshBasicMaterial({ color: COLORS.red, side: BackSide, transparent: true, opacity: 0, blending: AdditiveBlending, depthTest: false, depthWrite: false });
+  const xray = new Mesh(ms.layers.solid.geometry, xrayMat);
+  xray.renderOrder = 2;
+  ms.pivot.add(xray);
+
+  const callout = label('', 'big ps-callout');
+  ms.scene.add(callout);
+  const say = (text: string, tone: 'ok' | 'bad' | 'warn' | 'api' | 'info' = 'info') => {
+    callout.element.textContent = text;
+    callout.element.className = `three-label big ps-callout ${tone}`;
+  };
+
+  let step = 0;
+  let cur: Look = { ...GOOD };
+  const look = (l: Partial<Look>, s = 0.3) => {
+    cur = { ...cur, ...l };
+    ms.state({ cull: cur.cull, depthTest: cur.depth, wireframe: cur.wire, blend: cur.blend }, Math.min(s, 0.15));
+    const o = step === 1 && cur.cull === 'none' ? 0.3 : 0;
+    if (s > 0) ms.tween(xrayMat, { opacity: o, duration: dur(s) });
+    else xrayMat.opacity = o;
+  };
+
+  // The pipeline object (steps 2–3).
+  const objName = api === 'vulkan' ? 'VkPipeline' : api === 'd3d12' ? 'ID3D12PipelineState' : 'VkPipeline / ID3D12PipelineState';
+  const box = ms.box(objName, [0, 0, 0], [2.1, 2.1, 2.1], apiC);
+  const boxEdges = (box.children[0] as LineSegments).material as LineBasicMaterial;
+  const boxFill = (box.children[1] as Mesh).material as MeshBasicMaterial;
+  const boxLabel = box.children[2] as CSS2DObject;
+  boxLabel.element.classList.add('ps-boxlabel');
+  const textures: Texture[] = [];
+  const sprite = (text: string, color: string, hgt = 0.12) => {
+    const sp = textSprite(text, color, hgt);
+    if (sp.material.map) textures.push(sp.material.map);
+    return sp;
+  };
+  const chipTexts = concept ? CHIPS.plain : CHIPS[api];
+  const chips = chipTexts.map((c) => sprite(c, CSS_HEX(apiC), 0.115));
+  const scatter = chips.map((_, i) => {
+    const a = (i / chips.length) * Math.PI * 2 + 0.4;
+    return new Vector3(Math.cos(a) * 1.75, ((i * 7) % 5) * 0.45 - 0.9, Math.sin(a) * 0.6);
+  });
+  const sink = chips.map((_, i) => new Vector3(((i % 5) - 2) * 0.35, i < 5 ? 0.6 : -0.6, 0.2));
+  chips.forEach((c) => {
+    c.visible = false;
+    ms.scene.add(c);
+  });
+
+  // Dynamic state chips + the pipeline cache (step 3).
+  const dynNames = api === 'opengl' ? ['glViewport', 'glScissor'] : api === 'vulkan' ? ['vkCmdSetViewport', 'vkCmdSetScissor'] : ['RSSetViewports', 'RSSetScissorRects'];
+  const dyn = (concept ? ['viewport', 'scissor'] : dynNames).map((n) => sprite(n, '#5cf08f', 0.12));
+  dyn.forEach((d) => {
+    d.visible = false;
+    ms.scene.add(d);
+  });
+  const cacheName = api === 'vulkan' ? 'VkPipelineCache' : api === 'd3d12' ? 'ID3D12PipelineLibrary' : 'pipeline cache';
+  const cache = ms.box(cacheName, [1.45, -1.2, 0.45], [0.6, 0.38, 0.38], COLORS.amber);
+  const ghostMat = new LineBasicMaterial({ color: apiC, transparent: true, opacity: 0 });
+  const ghost = new LineSegments(new EdgesGeometry(new BoxGeometry(2.1, 2.1, 2.1)), ghostMat);
+  ms.scene.add(ghost);
+
+  ms.onFrame((time) => {
+    if (step !== 3) return;
+    const tt = motion ? time : 0.8;
+    dyn.forEach((d, k) => {
+      const a = tt * 0.6 + k * Math.PI;
+      d.position.set(Math.cos(a) * 1.7, 0.35 - k * 0.7, Math.sin(a) * 1.7);
+      d.material.opacity = 0.55 + 0.45 * Math.abs(Math.sin(tt * 2.2 + k));
+    });
+  });
+
+  const base = new Vector3(...DEFAULT_CAMERA.eye);
+  const dolly = (k: number, s: number) => {
+    const p = base.clone().multiplyScalar(k);
+    if (s > 0) ms.tween(ms.camera.position, { x: p.x, y: p.y, z: p.z, duration: dur(s), ease: 'power2.inOut' });
+    else ms.camera.position.copy(p);
+  };
+
+  const validate = () => {
+    ms.sweep('shaded', 'shaded', 1.0);
+    ms.material.uniforms.uSweepColor.value.set(COLORS.amber);
+  };
+
+  let tl: gsap.core.Timeline | null = null;
+  const stopLoop = () => {
+    tl?.kill();
+    tl = null;
+  };
+  const loop = (build: (tl: gsap.core.Timeline) => number) => {
+    stopLoop();
+    if (!motion) return false;
+    tl = gsap.timeline({ repeat: -1 });
+    const end = build(tl);
+    tl.set({}, {}, end);
+    return true;
+  };
+
+  const sealBox = (on: boolean, color = apiC) => {
+    box.visible = on;
+    boxEdges.color.set(color);
+    boxEdges.opacity = 0.95;
+    boxFill.color.set(color);
+    boxFill.opacity = 0.035;
+  };
+
+  return {
+    ms,
+    show(s, animate) {
+      const prev = step;
+      step = s;
+      stopLoop();
+      gsap.killTweensOf(chips.map((c) => c.position));
+      ms.setMode('shaded', 0, 0);
+      ms.explode(0, 0);
+      chips.forEach((c) => (c.visible = false));
+      dyn.forEach((d) => (d.visible = s === 3));
+      cache.visible = s === 3;
+      ghostMat.opacity = 0;
+      dolly(s >= 2 ? 1.45 : 1, secs(animate, 1.0));
+      callout.position.set(0, s >= 2 ? (concept ? -1.3 : -1.42) : concept ? -1.0 : -1.18, s >= 2 ? 0.5 : 0.3);
+      sealBox(s >= 2);
+
+      if (s === 0) {
+        look(GOOD, 0);
+        say(hooks.callout(0, -1, false), 'ok');
+        loop((tl) => {
+          DEMOS.forEach((d, i) => {
+            const t0 = 0.6 + i * 2.8;
+            if (d.explode) tl.call(() => ms.explode(d.explode!, 0.5), [], t0 - 0.5);
+            tl.call(() => {
+              look(d.bad);
+              say(hooks.callout(0, i, true), 'bad');
+              hooks.demo?.(i, true);
+            }, [], t0);
+            tl.call(() => {
+              look(GOOD);
+              say(hooks.callout(0, i, false), 'ok');
+              hooks.demo?.(i, false);
+            }, [], t0 + 1.5);
+            if (d.explode) tl.call(() => ms.explode(0, 0.4), [], t0 + 2.4);
+          });
+          return 0.6 + DEMOS.length * 2.8;
+        });
+        hooks.demo?.(-1, false);
+      } else if (s === 1) {
+        const run = loop((tl) => {
+          tl.call(() => {
+            look(LEFTOVER, 0);
+            say(hooks.callout(1, -1, true), 'bad');
+            hooks.glCall?.(-1);
+          }, [], 0);
+          GL_SEQ.forEach((g, k) => {
+            tl.call(() => {
+              look(g.look);
+              say(hooks.callout(1, k, false), k === GL_SEQ.length - 1 ? 'ok' : 'api');
+              hooks.glCall?.(k);
+            }, [], 1.6 + k * 1.3);
+          });
+          const tDraw = 1.6 + GL_SEQ.length * 1.3 + 0.2;
+          tl.call(() => {
+            validate();
+            say(hooks.callout(1, GL_SEQ.length, false), 'warn');
+            hooks.glCall?.(GL_SEQ.length);
+          }, [], tDraw);
+          return tDraw + 2.8;
+        });
+        if (!run) {
+          look(GOOD, 0);
+          say(hooks.callout(1, GL_SEQ.length, false), 'warn');
+          hooks.glCall?.(GL_SEQ.length);
+        }
+      } else if (s === 2) {
+        const gather = animate && motion && prev < 2;
+        const bindLoop = (t0: number) =>
+          loop((tl) => {
+            tl.call(() => {
+              look(DEBUG, 0);
+              sealBox(true, COLORS.amber);
+              say(hooks.callout(2, 1, true), 'warn');
+            }, [], t0);
+            tl.call(() => {
+              look(GOOD, 0);
+              sealBox(true);
+              say(hooks.callout(2, 2, false), 'api');
+            }, [], t0 + 2.2);
+            return t0 + 4.4;
+          });
+        if (gather) {
+          look(LEFTOVER, 0);
+          ms.setMode('ghost', 1, 0);
+          boxEdges.opacity = 0.25;
+          say(hooks.callout(2, 0, true), 'info');
+          chips.forEach((c, i) => {
+            c.visible = true;
+            c.position.copy(scatter[i]);
+            c.material.opacity = 0;
+            ms.tween(c.material, { opacity: 1, duration: dur(0.3), delay: i * 0.04 });
+            ms.tween(c.position, { x: sink[i].x, y: sink[i].y, z: sink[i].z, duration: dur(1.0), delay: 0.5 + i * 0.07, ease: 'power3.in' });
+            ms.tween(c.material, { opacity: 0, duration: dur(0.25), delay: 1.35 + i * 0.07 });
+          });
+          tl = gsap.timeline();
+          tl.call(() => {
+            chips.forEach((c) => (c.visible = false));
+            look(GOOD, 0);
+            ms.setMode('shaded', 0, 0);
+            sealBox(true);
+            boxFill.opacity = 0.3;
+            ms.tween(boxFill, { opacity: 0.035, duration: dur(0.9) });
+            say(hooks.callout(2, 0, false), 'api');
+          }, [], 2.3);
+          tl.call(() => bindLoop(0), [], 4.4);
+        } else {
+          look(GOOD, 0);
+          say(hooks.callout(2, 0, false), 'api');
+          bindLoop(1.6);
+        }
+      } else {
+        look(GOOD, 0);
+        say(hooks.callout(3, 0, false), 'ok');
+        loop((tl) => {
+          tl.call(() => {
+            ghost.position.set(0, 0, 0);
+            ghost.scale.setScalar(1);
+            ghostMat.opacity = 0.9;
+          }, [], 0.4);
+          tl.to(ghost.position, { x: cache.position.x, y: cache.position.y, z: cache.position.z, duration: dur(1.3), ease: 'power2.in' }, 0.5);
+          tl.to(ghost.scale, { x: 0.2, y: 0.12, z: 0.12, duration: dur(1.3), ease: 'power2.in' }, 0.5);
+          tl.to(ghostMat, { opacity: 0, duration: dur(0.3) }, 1.6);
+          tl.call(() => {
+            const m = (cache.children[1] as Mesh).material as MeshBasicMaterial;
+            m.opacity = 0.35;
+            ms.tween(m, { opacity: 0.08, duration: dur(0.7) });
+          }, [], 1.8);
+          return 3.6;
+        });
+      }
+    },
+    destroy() {
+      stopLoop();
+      gsap.killTweensOf(chips.map((c) => c.position));
+      textures.forEach((x) => x.dispose());
+      ms.destroy();
+    },
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* Real data: the state, spelled out per API, next to the model         */
 /* ------------------------------------------------------------------ */
 function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
   const { t } = ctx;
   const api = ctx.state.api;
   const rows = stateRows(ctx);
-  const r = ctx.derived.render(api, 160, 100);
-  const st = r.stats;
-  const spellHead: Record<ApiId, string> = {
-    opengl: t(L('OpenGL-anrop', 'OpenGL call')),
-    vulkan: 'VkGraphicsPipelineCreateInfo',
-    d3d12: 'D3D12_GRAPHICS_PIPELINE_STATE_DESC',
-  };
-  const trs = rows.map((row) =>
-    h('tr', { dataset: { kind: row.kind[api] } }, [
-      h('td.ps-what', { text: t(row.what) }),
-      h('td.ps-val', { text: t(row.value) }),
-      h('td.ps-spell.c3', { text: row.spell[api] }),
-      h('td.c4', {}, [h(`span.ps-kind.k-${row.kind[api]}`, { text: t(KIND_LABEL[row.kind[api]]) })]),
+  const st = ctx.derived.render(api, 160, 100).stats;
+  const stNoCull = ctx.derived.render(api, 160, 100, { cullBack: false }).stats;
+  const extraFrags = Math.max(0, stNoCull.fragments - st.fragments);
+  const idx = ctx.state.mesh.indices.length;
+  const calls = rows.reduce((n, row) => n + (row.kind.opengl === 'global' && !row.glDefault ? row.spell.opengl.split(';').length : 0), 0);
+  const baked = rows.filter((row) => row.kind[api] === 'baked').length;
+
+  let scene: StateScene | null = null;
+
+  // Panel 0: this app's state; the row being demonstrated lights up.
+  const p0Rows = rows.map((row) => h('tr', {}, [h('td.ps-what', { text: t(row.what) }), h('td.ps-val', { text: t(row.value) })]));
+  const p0 = h('div', {}, [
+    h('div.stat-row', {}, [
+      stat(`${st.culled}/${st.trianglesIn}`, t(L('trianglar cullade', 'triangles culled')), 'glow-cyan'),
+      stat(`+${extraFrags.toLocaleString('en-US')}`, t(L('fragment utan culling', 'fragments without culling')), 'glow-magenta'),
     ]),
-  );
-  const table = h('table.ps-table', {}, [
-    h('thead', {}, [
-      h('tr', {}, [
-        h('th', { text: t(L('State', 'State')) }),
-        h('th', { text: t(L('Den här appen', 'This app')) }),
-        h('th.c3', { text: spellHead[api] }),
-        h('th.c4', { text: api === 'opengl' ? t(L('lagras', 'lives in')) : t(L('bakad?', 'baked?')) }),
-      ]),
-    ]),
-    h('tbody', {}, trs),
-  ]);
-  const tableCard = h('div.card.ps-tablecard', {}, [
-    h('h4', {
-      text: api === 'opengl' ? t(L('OpenGL-kontextens state för draw-anropet', 'OpenGL context state for the draw call')) : api === 'vulkan' ? 'VkPipeline · vkCreateGraphicsPipelines' : 'ID3D12PipelineState · CreateGraphicsPipelineState',
+    h('table.ps-table.ps-compact', {}, [h('tbody', {}, p0Rows)]),
+    h('p.ps-note', {
+      html: t(L(
+        `Testrendering 160×100: djuptestet stoppade ${st.depthRejected} fragment. Modellen visar ett värde i taget fel – och sedan rätt igen.`,
+        `Test render 160×100: the depth test rejected ${st.depthRejected} fragments. The model shows one value at a time set wrong – then right again.`,
+      )),
     }),
-    h('div.v-scroll.ps-scroll', {}, [table]),
   ]);
 
-  const calls = rows.reduce((n, row) => n + (row.kind.opengl === 'global' ? row.spell.opengl.split(';').length : 0), 0);
-  const baked = rows.filter((row) => row.kind[api] === 'baked').length;
-  const notes: Text[] = [
-    L(
-      `Effekt i en testrendering 160×100: culling tog bort ${st.culled} av ${st.trianglesIn} trianglar, djuptestet stoppade ${st.depthRejected} fragment.`,
-      `Effect in a 160×100 test render: culling removed ${st.culled} of ${st.trianglesIn} triangles, the depth test rejected ${st.depthRejected} fragments.`,
-    ),
-    api === 'opengl'
-      ? L(`${calls} separata state-anrop före draw. Inget kontrolleras förrän <code>glDrawElements</code>.`, `${calls} separate state calls before the draw. Nothing is checked until <code>glDrawElements</code>.`)
-      : L(`Alla ${rows.length} rader fylls i en enda struct och skickas i <b>ett</b> anrop.`, `All ${rows.length} rows are filled into one struct and sent in <b>one</b> call.`),
-    api === 'opengl'
-      ? L('Allt är global kontext-state: varje draw ser den kombination som råkar gälla just då.', 'Everything is global context state: each draw sees whatever combination is current at that moment.')
-      : L(`${baked} av ${rows.length} bakas in och kan inte ändras – ett nytt värde kräver en ny pipeline.`, `${baked} of ${rows.length} are baked in and immutable – a new value needs a new pipeline.`),
-    api === 'opengl'
-      ? L('Drivrutinen hashar state vid draw och kan behöva kompilera en ny shadervariant – ett hack på flera ms.', 'The driver hashes state at draw time and may need to compile a new shader variant – a hitch of several ms.')
-      : api === 'vulkan'
-        ? L('Skapas vid laddning med en <code>VkPipelineCache</code> (spara till disk). Per draw: bara <code>vkCmdBindPipeline</code>.', 'Created at load time with a <code>VkPipelineCache</code> (saved to disk). Per draw: just <code>vkCmdBindPipeline</code>.')
-        : L('Skapas vid laddning; <code>ID3D12PipelineLibrary</code> eller <code>GetCachedBlob</code> sparar den. Per draw: bara <code>SetPipelineState</code>.', 'Created at load time; <code>ID3D12PipelineLibrary</code> or <code>GetCachedBlob</code> saves it. Per draw: just <code>SetPipelineState</code>.'),
-  ];
-  const note = h('p.ps-note');
-  const side = h('div.ps-side', {}, [
-    stat(`${st.culled}`, t(L('trianglar cullade', 'triangles culled')), 'glow-cyan'),
-    stat(`${st.depthRejected}`, t(L('fragment djup-avvisade', 'fragments depth-rejected')), 'glow-magenta'),
-    stat(api === 'opengl' ? `${calls}` : '1', api === 'opengl' ? t(L('state-anrop / draw', 'state calls / draw')) : t(L('bind / draw', 'bind / draw')), 'glow-amber'),
-    card(t(L('Notera', 'Note')), [note], 'ps-notecard'),
+  // Panel 1: the GL calls, flipped one at a time.
+  const callEls = [...GL_SEQ.map((g) => g.call), `glDrawElements(GL_TRIANGLES, ${idx}, …)`].map((c, i) =>
+    h(`div.ps-call${i === GL_SEQ.length ? '.draw' : ''}`, {}, [h('span.ps-sw', {}, [h('span.ps-knob')]), h('code', { text: c })]),
+  );
+  const p1 = h('div', {}, [
+    h('div.stat-row', {}, [stat(String(calls), t(L('state-anrop / draw', 'state calls / draw')), 'glow-amber'), stat('0', t(L('kontrollerade före draw', 'checked before the draw')), 'glow-magenta')]),
+    h('div.ps-calls', {}, callEls),
+    h('p.ps-note', {
+      html: t(L(
+        'Allt är global kontext-state: det förra draw-anropet lämnade <i>linjer, blending, inget djup</i>. Först vid <code>glDrawElements</code> ser drivrutinen hela kombinationen – och kan behöva kompilera en ny shadervariant.',
+        'Everything is global context state: the previous draw left <i>lines, blending, no depth</i>. Only at <code>glDrawElements</code> does the driver see the whole combination – and it may need to compile a new shader variant.',
+      )),
+    }),
   ]);
-  const root = h('div.ps-data', { dataset: { api } }, [tableCard, side]);
-  host.append(root);
-  const c3 = Array.from(root.querySelectorAll<HTMLElement>('.c3'));
-  const c4 = Array.from(root.querySelectorAll<HTMLElement>('.c4'));
+
+  // Panel 2: the whole create-info, spelled out in the current API.
+  const kinds = Array.from(new Set(rows.map((r) => r.kind[api])));
+  const legend = h('div.ps-legend', {}, kinds.map((k) => h(`span.ps-kind.k-${k}`, { text: t(KIND_LABEL[k]) })));
+  const spellRows = (filter: (r: StateRow) => boolean) =>
+    rows.filter(filter).map((row) =>
+      h(`tr.k-${row.kind[api]}`, {}, [h('td.ps-what', { text: t(row.what) }), h('td.ps-spell', { text: row.spell[api] })]),
+    );
+  const p2 = h('div', {}, [
+    h('div.stat-row', {}, [
+      api === 'opengl'
+        ? stat(String(calls), t(L('separata anrop', 'separate calls')), 'glow-amber')
+        : stat(`${baked}/${rows.length}`, t(L('bakade i objektet', 'baked into the object')), 'glow-cyan'),
+      stat(api === 'opengl' ? '—' : '1', api === 'opengl' ? t(L('inget pipeline-objekt', 'no pipeline object')) : t(L('bind / draw', 'bind / draw')), 'glow-magenta'),
+    ]),
+    legend,
+    h('div.v-scroll.ps-scroll2', {}, [h('table.ps-table.ps-spelled', {}, [h('tbody', {}, spellRows(() => true))])]),
+    h('p.ps-note', {
+      html: t(api === 'opengl'
+        ? L('OpenGL har inget pipeline-objekt – Vulkan och D3D12 samlar allt detta i <b>ett</b> anrop. Modellen visar hur ett helt objekt byts på en gång.', 'OpenGL has no pipeline object – Vulkan and D3D12 put all of this into <b>one</b> call. The model shows a whole object being swapped at once.')
+        : L(`Alla ${rows.length} rader i en struct, ett anrop. Att byta till en annan pipeline (här en wireframe-variant) ändrar allt på en gång.`, `All ${rows.length} rows in one struct, one call. Switching to another pipeline (here a wireframe variant) changes everything at once.`)),
+    }),
+  ]);
+
+  // Panel 3: what stays dynamic, and the cache.
+  const dynKinds: Kind[] = ['dynamic', 'cmd'];
+  const p3 = h('div', {}, [
+    h('div.stat-row', {}, [
+      stat(String(rows.filter((r) => dynKinds.includes(r.kind[api])).length), t(L('dynamiska / per anrop', 'dynamic / per call')), 'glow-green'),
+      stat(api === 'vulkan' ? 'VkPipelineCache' : api === 'd3d12' ? 'PipelineLibrary' : 'ProgramBinary', t(L('cache', 'cache')), 'glow-amber'),
+    ]),
+    h('table.ps-table.ps-spelled', {}, [h('tbody', {}, spellRows((r) => dynKinds.includes(r.kind[api]) || r.what === rows[rows.length - 1].what))]),
+    h('p.ps-note', {
+      html: t(api === 'opengl'
+        ? L('I OpenGL är allt "dynamiskt" – därför kan drivrutinen behöva kompilera om. <code>glGetProgramBinary</code> kan spara den länkade maskinkoden till nästa start.', 'In OpenGL everything is "dynamic" – which is why the driver may have to recompile. <code>glGetProgramBinary</code> can save the linked machine code for the next launch.')
+        : api === 'vulkan'
+          ? L('Viewport och scissor är <code>VK_DYNAMIC_STATE_*</code> och sätts med <code>vkCmdSet*</code> varje frame. Pipelinen skapas vid laddning med en <code>VkPipelineCache</code> som sparas till disk.', 'Viewport and scissor are <code>VK_DYNAMIC_STATE_*</code>, set with <code>vkCmdSet*</code> every frame. The pipeline is created at load time with a <code>VkPipelineCache</code> saved to disk.')
+          : L('Viewport, scissor och exakt topologi sätts på command listen. <code>ID3D12PipelineLibrary</code> eller <code>GetCachedBlob</code> sparar PSO:n till nästa start.', 'Viewport, scissor and the exact topology are set on the command list. <code>ID3D12PipelineLibrary</code> or <code>GetCachedBlob</code> keeps the PSO for the next launch.')),
+    }),
+  ]);
+
+  const objTitle = api === 'opengl' ? t(L('OpenGL – samma state, utspritt', 'OpenGL – the same state, spread out')) : api === 'vulkan' ? 'VkGraphicsPipelineCreateInfo' : 'D3D12_GRAPHICS_PIPELINE_STATE_DESC';
+  const titles = [t(L('Den här appens pipeline state', 'This app’s pipeline state')), t(L('OpenGL – en brytare i taget', 'OpenGL – one switch at a time')), objTitle, t(L('Dynamisk state & cache', 'Dynamic state & cache'))];
+
+  scene = stateScene(host, ctx, false, {
+    demo: (i, bad) => {
+      p0Rows.forEach((r, k) => {
+        r.classList.toggle('hot', i >= 0 && k === DEMOS[i].row);
+        r.classList.toggle('bad', i >= 0 && bad && k === DEMOS[i].row);
+      });
+    },
+    glCall: (k) => callEls.forEach((el, i) => {
+      el.classList.toggle('done', i <= k);
+      el.classList.toggle('cur', i === k);
+    }),
+    callout: (step, k, bad) => {
+      if (step === 0) return k < 0 ? t(L('alla värden rätt', 'all values correct')) : DEMOS[k].spell[api][bad ? 0 : 1];
+      if (step === 1) {
+        if (k < 0) return t(L('kvar från förra draw: LINE · BLEND · inget djup · ingen culling', 'left from the last draw: LINE · BLEND · no depth · no culling'));
+        if (k < GL_SEQ.length) return GL_SEQ[k].call;
+        return t(L(`glDrawElements → validera all state… ⚠ ny shadervariant`, `glDrawElements → validate all state… ⚠ new shader variant`));
+      }
+      if (step === 2) {
+        const bind = api === 'd3d12' ? 'SetPipelineState' : 'vkCmdBindPipeline';
+        if (k === 0) return bad ? t(L('fyller i create-info…', 'filling in the create info…')) : api === 'd3d12' ? 'CreateGraphicsPipelineState → PSO' : api === 'vulkan' ? 'vkCreateGraphicsPipelines → VkPipeline' : t(L('skapas en gång → ett objekt', 'created once → one object'));
+        return k === 1 ? `${bind}(wirePipeline)` : `${bind}(pipeline)`;
+      }
+      return api === 'opengl' ? 'glViewport · glScissor → global' : api === 'vulkan' ? 'vkCmdSetViewport · vkCmdSetScissor' : 'RSSetViewports · RSSetScissorRects';
+    },
+  });
+  const ms = scene.ms;
+  const panels = [p0, p1, p2, p3].map((c, i) => ms.panel(titles[i], [c], { className: 'ps-panel' }));
 
   return {
     show(step, animate) {
-      root.dataset.step = String(step);
-      note.innerHTML = t(notes[step]);
-      const vis3 = step >= 1;
-      const vis4 = step >= 2;
-      const set = (els: HTMLElement[], vis: boolean, fresh: boolean) => {
-        if (animate && fresh && vis) gsap.fromTo(els, { opacity: 0, x: -10 }, { opacity: 1, x: 0, stagger: 0.03, duration: dur(0.3) });
-        else gsap.set(els, { opacity: vis ? 1 : 0, x: 0 });
-      };
-      set(c3, vis3, step === 1);
-      set(c4, vis4, step === 2);
-      trs.forEach((tr) => tr.classList.toggle('dim', step === 3 && api !== 'opengl' && tr.dataset.kind === 'baked'));
-      if (animate) gsap.fromTo(note, { opacity: 0, y: 6 }, { opacity: 1, y: 0, duration: dur(0.35) });
+      panels.forEach((p, i) => (p.style.display = i === step ? '' : 'none'));
+      if (animate) gsap.fromTo(panels[step], { opacity: 0, x: 14 }, { opacity: 1, x: 0, duration: dur(0.4) });
+      scene!.show(step, animate);
     },
     destroy() {
-      gsap.killTweensOf([...c3, ...c4, note]);
+      gsap.killTweensOf(panels);
+      scene!.destroy();
     },
   };
 }
 
 /* ------------------------------------------------------------------ */
-/* Concept: a panel of switches vs one sealed, pre-baked block          */
+/* Concept: switches flipped one by one vs one sealed object            */
 /* ------------------------------------------------------------------ */
-const SWITCHES: { name: string; call: string; on: boolean }[] = [
-  { name: 'DEPTH_TEST', call: 'glEnable(GL_DEPTH_TEST)', on: true },
-  { name: 'DepthFunc', call: 'glDepthFunc(GL_LESS)', on: true },
-  { name: 'CULL_FACE', call: 'glEnable(GL_CULL_FACE)', on: true },
-  { name: 'CullFace', call: 'glCullFace(GL_BACK)', on: true },
-  { name: 'FrontFace', call: 'glFrontFace(GL_CCW)', on: true },
-  { name: 'BLEND', call: 'glDisable(GL_BLEND)', on: false },
-  { name: 'Program', call: 'glUseProgram(prog)', on: true },
-  { name: 'VAO', call: 'glBindVertexArray(vao)', on: true },
-];
-const CHIPS = ['shaders', 'vertex input', 'topology', 'raster · cull', 'depth LESS', 'blend off', 'formats', 'layout'];
-
 function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
   const { t } = ctx;
-  const api = ctx.state.api;
-  const motion = !reducedMotion();
-
-  // Left: OpenGL state machine.
-  const swRows = SWITCHES.map((s) =>
-    h('div.psc-sw', {}, [h('span.psc-toggle', {}, [h('span.psc-knob')]), h('span.psc-lbl', {}, [h('span.psc-name', { text: s.name }), h('code.psc-call', { text: s.call })])]),
-  );
-  const bars = Array.from({ length: 22 }, (_, i) => h(`span.psc-bar${i === 15 ? '.spike' : ''}`, { style: { height: `${i === 15 ? 92 : 22 + ((i * 37) % 19)}%` } }));
-  const left = h('div.psc-pane.gl', {}, [
-    h('div.psc-head', {}, [h('b', { text: 'OpenGL' }), h('span', { text: t(L('global state-maskin', 'global state machine')) })]),
-    h('div.psc-switches', {}, swRows),
-    h('div.psc-draw', {}, [
-      h('span.psc-drawcall', { text: 'glDrawElements' }),
-      h('span.psc-validate', { text: t(L('validera all state…', 'validate all state…')) }),
-      h('span.psc-warn', { text: t(L('⚠ ny shadervariant', '⚠ new shader variant')) }),
-    ]),
-    h('div.psc-frames', {}, [h('span.psc-frames-l', { text: t(L('frame-tid', 'frame time')) }), ...bars]),
-    h('div.psc-scan'),
-  ]);
-
-  // Right: the pipeline object.
-  const objName = api === 'vulkan' ? 'VkPipeline' : api === 'd3d12' ? 'ID3D12PipelineState' : 'VkPipeline / ID3D12PipelineState';
-  const cacheName = api === 'vulkan' ? 'VkPipelineCache' : api === 'd3d12' ? 'ID3D12PipelineLibrary' : 'pipeline cache';
-  const chipEls = CHIPS.map((c) => h('div.psc-chip', { text: c }));
-  const block = h('div.psc-block', {}, [h('div.psc-block-name', { text: objName }), h('div.psc-lock', { text: t(L('oföränderlig', 'immutable')) }), h('div.psc-shine')]);
-  const dyn = ['viewport', 'scissor'].map((d) => h('div.psc-dyn', {}, [h('span.psc-dyn-dot'), d]));
-  const cache = h('div.psc-cache', {}, [h('div.psc-disk'), h('span', { text: cacheName })]);
-  const ghost = h('div.psc-ghost');
-  const bind = h('div.psc-bind', { text: api === 'd3d12' ? 'SetPipelineState' : 'vkCmdBindPipeline' });
-  const area = h('div.psc-area', {}, [block, ...chipEls, ...dyn, cache, ghost, bind]);
-  const right = h('div.psc-pane.pso', {}, [
-    h('div.psc-head', {}, [h('b', { text: api === 'opengl' ? 'Vulkan / D3D12' : api === 'vulkan' ? 'Vulkan' : 'Direct3D 12' }), h('span', { text: t(L('förbakat pipeline-objekt', 'pre-baked pipeline object')) })]),
-    area,
-  ]);
-  (api === 'opengl' ? left : right).classList.add('mine');
-
-  const caption = h('div.pack-caption.psc-caption');
-  host.append(h('div.psc-root', {}, [left, right]), caption);
-
   const captions = [
-    L('Samma frågor måste besvaras för varje draw: vilka shaders, vilken topologi, culling, djup, blending, format…', 'The same questions must be answered for every draw: which shaders, which topology, culling, depth, blending, formats…'),
-    L('OpenGL: brytare som slås om en i taget. Först vid draw-anropet ser drivrutinen hela kombinationen – och kan behöva kompilera om (spiken i frame-tiden).', 'OpenGL: switches flipped one at a time. Only at the draw call does the driver see the whole combination – and it may have to recompile (the spike in frame time).'),
-    L('Vulkan/D3D12: allt förseglas i ett oföränderligt objekt i förväg. Drivrutinen kompilerar en gång; varje draw binder bara blocket.', 'Vulkan/D3D12: everything is sealed into one immutable object up front. The driver compiles once; each draw just binds the block.'),
-    L('Lite state får vara dynamisk (viewport, scissor). Färdiga pipelines sparas i en cache så nästa start går snabbt.', 'A little state may stay dynamic (viewport, scissor). Finished pipelines are saved in a cache so the next launch is fast.'),
+    L('Samma frågor måste besvaras för varje draw: culling, varvordning, fyllt eller linjer, djup, blending… Modellen visar vad varje inställning gör.', 'The same questions must be answered for every draw: culling, winding, filled or lines, depth, blending… The model shows what each setting does.'),
+    L('OpenGL: brytare som slås om en i taget, och de gäller tills någon ändrar dem. Först vid draw-anropet ser drivrutinen helheten – och kan behöva kompilera om (spiken i frame-tiden).', 'OpenGL: switches flipped one at a time, and they stay until someone changes them. Only at the draw call does the driver see the whole – and it may have to recompile (the spike in frame time).'),
+    L('Vulkan/D3D12: allt förseglas i ett oföränderligt objekt i förväg. Att byta pipeline byter <b>all</b> state på en gång.', 'Vulkan/D3D12: everything is sealed into one immutable object up front. Switching pipelines swaps <b>all</b> the state at once.'),
+    L('Lite state får vara dynamisk (viewport, scissor – de gröna). Färdiga pipelines sparas i en cache så nästa start går snabbt.', 'A little state may stay dynamic (viewport, scissor – the green ones). Finished pipelines are saved in a cache so the next launch is fast.'),
   ];
+  const caption = h('p.ps-caption');
+  const bars = Array.from({ length: 18 }, (_, i) => h('span.ps-bar', { style: { height: `${24 + ((i * 37) % 19)}%` } }));
+  const spike = h('span.ps-bar.spike', { style: { height: '24%' } });
+  const framePanelBody = h('div.ps-frames', {}, [...bars, spike]);
+  const swNames = [L('polygonläge: fyllt', 'polygon mode: fill'), L('blending: av', 'blending: off'), L('djuptest: på', 'depth test: on'), L('culling: på', 'culling: on')];
+  const switches = GL_SEQ.map((_, i) => h('div.ps-call', {}, [h('span.ps-sw', {}, [h('span.ps-knob')]), h('code', { text: t(swNames[i]) })]));
 
-  // Chip positions: scattered (fractions of the area) or packed in the block (2 × 4 grid).
-  const SCATTER = [[0.06, 0.08], [0.55, 0.04], [0.3, 0.26], [0.72, 0.3], [0.08, 0.5], [0.48, 0.55], [0.18, 0.76], [0.66, 0.78]];
-  const ROT = [-8, 6, -4, 9, 5, -7, 7, -5];
-  let step = 0;
-
-  const layout = (animate: boolean) => {
-    const W = area.clientWidth;
-    const H = area.clientHeight;
-    if (!W || !H) return;
-    const packed = step >= 2;
-    const bw = step >= 3 ? Math.min(W * 0.56, 270) : Math.min(W * 0.62, 300);
-    const bh = Math.min(H * 0.72, 190);
-    const bx = step >= 3 ? 8 : (W - bw) / 2;
-    const by = 6;
-    const cw = (bw - 30) / 2;
-    const ch = (bh - 44) / 4;
-    gsap.set(block, { x: bx, y: by, width: bw, height: bh });
-    chipEls.forEach((c, i) => {
-      const p = packed
-        ? { x: bx + 10 + (i % 2) * (cw + 10), y: by + 30 + Math.floor(i / 2) * ch, width: cw, rotation: 0 }
-        : { x: SCATTER[i][0] * (W - 120), y: SCATTER[i][1] * (H - 30), width: 118, rotation: ROT[i] };
-      if (animate) gsap.to(c, { ...p, duration: dur(0.9), delay: packed ? i * 0.06 : 0, ease: 'power3.inOut' });
-      else gsap.set(c, p);
-    });
-    const dynOn = step >= 3;
-    dyn.forEach((d, i) => {
-      const p = { x: bx + bw + 14, y: by + 30 + i * 34, opacity: dynOn ? 1 : 0 };
-      if (animate) gsap.to(d, { ...p, duration: dur(0.5), delay: dynOn ? 0.5 + i * 0.12 : 0 });
-      else gsap.set(d, p);
-    });
-    const cx = bx + bw + 14;
-    gsap.set(cache, { x: cx, y: by + 30 + 2 * 34 + 6, opacity: dynOn ? 1 : 0 });
-    gsap.set(bind, { x: bx + bw / 2, xPercent: -50, y: by + bh + 10, opacity: packed ? 1 : 0 });
-    if (animate && dynOn && motion) {
-      gsap.fromTo(ghost, { x: bx + bw * 0.25, y: by + bh * 0.25, width: bw * 0.5, height: bh * 0.5, opacity: 0.8 }, { x: cx + 2, y: by + 30 + 2 * 34 + 12, width: 22, height: 18, opacity: 0, duration: dur(1), delay: 0.8, ease: 'power2.in' });
-    } else gsap.set(ghost, { opacity: 0 });
-  };
-
-  const apply = (animate: boolean) => {
-    const root = left.parentElement!;
-    root.dataset.step = String(step);
-    left.classList.toggle('active', step === 1);
-    right.classList.toggle('active', step >= 2);
-    const flip = step >= 1;
-    swRows.forEach((r, i) => {
-      const on = flip && SWITCHES[i].on;
-      r.classList.toggle('set', flip);
-      r.classList.toggle('on', on);
-      const knob = r.querySelector<HTMLElement>('.psc-knob')!;
-      const call = r.querySelector<HTMLElement>('.psc-call')!;
-      const name = r.querySelector<HTMLElement>('.psc-name')!;
-      if (animate && flip) {
-        gsap.fromTo(knob, { x: 0 }, { x: on ? 14 : 0, duration: dur(0.25), delay: i * 0.18, ease: 'back.out(2)' });
-        gsap.fromTo(call, { opacity: 0, x: -6 }, { opacity: 1, x: 0, duration: dur(0.25), delay: i * 0.18 });
-        gsap.to(name, { opacity: 0, duration: dur(0.2), delay: i * 0.18 });
-      } else {
-        gsap.set(knob, { x: on ? 14 : 0 });
-        gsap.set(call, { opacity: flip ? 1 : 0, x: 0 });
-        gsap.set(name, { opacity: flip ? 0 : 1 });
+  const scene = stateScene(host, ctx, true, {
+    glCall: (k) => {
+      switches.forEach((el, i) => el.classList.toggle('done', i <= k));
+      if (k === GL_SEQ.length) gsap.fromTo(spike, { height: '24%' }, { height: '95%', duration: dur(0.2), yoyo: true, repeat: 1, repeatDelay: 0.9 });
+      else if (k < 0) gsap.set(spike, { height: '24%' });
+    },
+    callout: (step, k, bad) => {
+      if (step === 0) return k < 0 ? t(L('rätt state', 'correct state')) : t(DEMOS[k].plain[bad ? 0 : 1]);
+      if (step === 1) {
+        if (k < 0) return t(L('kvar från förra draw-anropet', 'left over from the previous draw'));
+        if (k < GL_SEQ.length) return t([L('fyllt', 'filled'), L('ingen blending', 'no blending'), L('djuptest på', 'depth test on'), L('culling på', 'culling on')][k]);
+        return t(L('draw → validera… ⚠ kompilera om', 'draw → validate… ⚠ recompile'));
       }
-    });
-    block.classList.toggle('sealed', step >= 2);
-    if (animate && step === 2) gsap.fromTo(block, { scale: 1.06 }, { scale: 1, duration: dur(0.6), delay: 0.7, ease: 'power2.out' });
-    else gsap.set(block, { scale: 1 });
-    layout(animate);
-    caption.innerHTML = t(captions[step]);
-  };
-
-  const ro = new ResizeObserver(() => layout(false));
-  ro.observe(area);
+      if (step === 2) {
+        if (k === 0) return bad ? t(L('allt samlas…', 'gathering everything…')) : t(L('ett förseglat objekt', 'one sealed object'));
+        return k === 1 ? t(L('byt pipeline → wireframe', 'switch pipeline → wireframe')) : t(L('byt pipeline → vanlig', 'switch pipeline → normal'));
+      }
+      return t(L('viewport & scissor sätts per frame', 'viewport & scissor set per frame'));
+    },
+  });
+  const ms = scene.ms;
+  ms.panel(t(L('Vad händer', 'What happens')), [caption], { side: 'bottom' });
+  const sidePanel = ms.panel(t(L('Brytare · frame-tid', 'Switches · frame time')), [h('div.ps-calls.plain', {}, switches), framePanelBody], { className: 'ps-panel' });
 
   return {
-    show(s, animate) {
-      step = s;
-      apply(animate);
+    show(step, animate) {
+      caption.innerHTML = t(captions[step]);
+      sidePanel.style.display = step === 1 ? '' : 'none';
+      if (animate) gsap.fromTo(caption, { opacity: 0, y: 6 }, { opacity: 1, y: 0, duration: dur(0.35) });
+      scene.show(step, animate);
     },
     destroy() {
-      ro.disconnect();
-      gsap.killTweensOf([block, ghost, ...chipEls, ...dyn, ...swRows.flatMap((r) => Array.from(r.children))]);
-      gsap.killTweensOf(left.querySelectorAll('*'));
+      gsap.killTweensOf([caption, spike]);
+      scene.destroy();
     },
   };
 }
+
 
 /* ------------------------------------------------------------------ */
 /* API panels                                                          */

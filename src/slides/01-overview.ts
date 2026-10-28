@@ -1,9 +1,13 @@
 import gsap from 'gsap';
-import { dur, h, reducedMotion, s } from '../core/dom';
+import { AdditiveBlending, BackSide, Box3, CanvasTexture, Mesh, MeshBasicMaterial, PlaneGeometry, Vector3, type ShaderMaterial } from 'three';
+import { dur, h } from '../core/dom';
 import { L, type Text } from '../core/i18n';
 import type { ApiId } from '../core/state';
+import type { MeshData } from '../model/types';
 import { formatBytes } from '../pipeline/layout';
-import { flowDiagram, type FlowEdge, type FlowNode } from '../views/Flow';
+import { createModelStage, secs, type ModelStage, type Particles } from '../views/ModelStage';
+import { COLORS, label } from '../views/three-helpers';
+import { stat } from '../views/widgets';
 import { SLIDES } from './index';
 import { standardSlide } from './standard';
 import type { ApiPanelSpec, CodeSnippet, SlideContext, StageGroup, Visual } from './types';
@@ -12,12 +16,6 @@ import '../styles/slides/overview.css';
 /* ------------------------------------------------------------------ */
 /* Shared stage table                                                  */
 /* ------------------------------------------------------------------ */
-const GROUP_COLOR: Record<StageGroup, string> = {
-  cpu: 'var(--g-cpu)',
-  api: 'var(--g-api)',
-  'gpu-prog': 'var(--g-gpu-prog)',
-  'gpu-fixed': 'var(--g-gpu-fixed)',
-};
 const GROUP_HEX: Record<StageGroup, string> = { cpu: '#38e1ff', api: '#9b7bff', 'gpu-prog': '#ff3fd2', 'gpu-fixed': '#ffb547' };
 
 interface Stage {
@@ -118,476 +116,318 @@ function annotations(ctx: SlideContext): Record<string, string> {
   };
 }
 
-/** The coarse software render as an <img>-ready data URL. */
-function renderImage(ctx: SlideContext): string {
-  const r = ctx.derived.render(ctx.state.api, RW, RH);
+/* ------------------------------------------------------------------ */
+/* The file's first lines as a glowing page in 3D                      */
+/* ------------------------------------------------------------------ */
+function lineColor(m: MeshData, line: string): string {
+  const l = line.trimStart();
+  if (m.sourceIsBinary) return '#9fdcff';
+  if (l.startsWith('#')) return '#6f78a8';
+  if (l.startsWith('vn ') || l.startsWith('facet')) return '#ff3fd2';
+  if (l.startsWith('vt ')) return '#ffb547';
+  if (l.startsWith('v ') || l.startsWith('vertex')) return '#38e1ff';
+  if (l.startsWith('f ')) return '#5cf08f';
+  return '#cfd6ff';
+}
+
+/** A plane showing the file's text; `sample` gives positions on lit glyph pixels (local space). */
+function textPage(m: MeshData, width: number) {
+  const CW = 1024;
+  const CH = 512;
   const c = document.createElement('canvas');
-  c.width = RW;
-  c.height = RH;
-  c.getContext('2d')!.putImageData(new ImageData(new Uint8ClampedArray(r.color), RW, RH), 0, 0);
-  return c.toDataURL();
+  c.width = CW;
+  c.height = CH;
+  const g = c.getContext('2d')!;
+  const lines = m.sourcePreview.slice(0, 18);
+  const lh = Math.min(27, (CH - 24) / Math.max(1, lines.length));
+  g.font = `600 ${Math.round(lh * 0.8)}px JetBrains Mono, ui-monospace, monospace`;
+  g.textBaseline = 'top';
+  lines.forEach((line, i) => {
+    g.fillStyle = lineColor(m, line);
+    g.fillText(line.slice(0, 66), 20, 12 + i * lh);
+  });
+  const lit: number[] = [];
+  const img = g.getImageData(0, 0, CW, CH).data;
+  for (let y = 0; y < CH; y += 2) for (let x = 0; x < CW; x += 2) if (img[(y * CW + x) * 4 + 3] > 120) lit.push(x, y);
+  const tex = new CanvasTexture(c);
+  const H = (width * CH) / CW;
+  const mat = new MeshBasicMaterial({ map: tex, transparent: true, opacity: 0, depthWrite: false, blending: AdditiveBlending });
+  const mesh = new Mesh(new PlaneGeometry(width, H), mat);
+  return {
+    mesh,
+    mat,
+    tex,
+    /** n positions on glyph pixels, in the plane's local space. */
+    sample(n: number): Float32Array {
+      const out = new Float32Array(n * 3);
+      for (let i = 0; i < n; i++) {
+        const k = lit.length ? Math.floor(Math.random() * (lit.length / 2)) * 2 : 0;
+        const px = lit[k] ?? Math.random() * CW;
+        const py = lit[k + 1] ?? Math.random() * CH;
+        out[i * 3] = (px / CW - 0.5) * width;
+        out[i * 3 + 1] = (0.5 - py / CH) * H;
+        out[i * 3 + 2] = 0;
+      }
+      return out;
+    },
+  };
 }
 
 /* ------------------------------------------------------------------ */
-/* Real data: the whole pipeline as lanes, annotated with real numbers */
+/* Both modes: the loaded model travels through the pipeline in 3D     */
+/** Pull the camera back on narrow views so `halfWidth` world units (around the origin) stay in frame. */
+function fitWidth(ms: ModelStage, halfWidth: number): void {
+  const base = ms.camera.position.length();
+  const prev = ms.view.onResize;
+  ms.view.onResize = (w, hh) => {
+    prev?.(w, hh);
+    const tanH = Math.tan((ms.camera.fov * Math.PI) / 360);
+    const need = halfWidth / (tanH * Math.max(0.3, w / hh)) + 0.6;
+    ms.camera.position.setLength(Math.max(base, Math.min(12, need)));
+  };
+}
+
 /* ------------------------------------------------------------------ */
-function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
+function journeyVisual(host: HTMLElement, ctx: SlideContext, concept: boolean): Visual {
   const { t } = ctx;
+  const m = ctx.state.mesh;
+  const api = ctx.state.api;
+  const l = ctx.derived.layout;
   const notes = annotations(ctx);
-  const VW = 1080;
-  const VH = 384;
-  const laneTop = [4, 98, 192, 286];
-  const laneH = 90;
-  const nodeY = (lane: number) => laneTop[lane] + 54;
-  const slotX = (i: number) => 96 + i * 174;
-
-  const nodes: FlowNode[] = [];
-  const edges: FlowEdge[] = [];
-  LANES.forEach((lane, li) => {
-    lane.stages.forEach((st, si) => {
-      nodes.push({ id: st.id, x: slotX(si), y: nodeY(li), w: 158, h: 46, label: t(st.label), sub: notes[st.id], color: GROUP_COLOR[st.group], step: li });
-      if (si > 0) edges.push({ from: lane.stages[si - 1].id, to: st.id, step: li, live: true });
-    });
-    if (li > 0) {
-      const prev = LANES[li - 1].stages;
-      edges.push({ from: prev[prev.length - 1].id, to: lane.stages[0].id, dir: 'v', step: li, live: true });
-    }
+  const st = ctx.derived.render(api, RW, RH).stats;
+  const ms = createModelStage(host, ctx, {
+    eye: [0, 1.0, 4.3],
+    autoRotate: 0,
+    bloom: concept ? 0.6 : 0.55,
+    bloomThreshold: concept ? 0.88 : 0.82,
+    layers: { solid: 0, wire: 0, points: 0, normals: 0 },
   });
+  ms.overlay.classList.add('ov-ms');
+  fitWidth(ms, 2.25);
+  const u = ms.material.uniforms;
+  const world = new Vector3();
 
-  const wrap = h('div.v-fill.ov-data');
-  host.append(wrap);
-  const flow = flowDiagram(wrap, nodes, edges, [VW, VH]);
-  const svg = flow.svg;
+  /* ---- 3D props ---- */
+  // Step 0: the file's text, in front of where the model will be.
+  const page = textPage(m, 2.9);
+  page.mesh.position.set(0, 0.1, 0.45);
+  page.mesh.lookAt(ms.camera.position);
+  ms.scene.add(page.mesh);
+  // Step 1: system RAM → VRAM.
+  const RX = -1.8;
+  const ram = ms.box(t(L('RAM · CPU', 'RAM · CPU')), [RX, 0.15, 0], [0.7, 0.7, 0.7], COLORS.cyan);
+  // VRAM box: snug around the model as it sits in the scene.
+  ms.pivot.updateMatrixWorld(true);
+  const bb = new Box3().setFromObject(ms.layers.solid, true);
+  const bc = bb.getCenter(new Vector3());
+  const bs = bb.getSize(new Vector3()).multiplyScalar(1.06).addScalar(0.1);
+  if (concept) bs.x = bs.z = Math.max(bs.x, bs.z);
+  const vram = ms.box(t(L('VRAM · GPU', 'VRAM · GPU')), [bc.x, bc.y, bc.z], [bs.x, bs.y, bs.z], COLORS.violet);
+  [ram, vram].forEach((b) => b.traverse((o) => {
+    const mm = (o as Mesh).material as MeshBasicMaterial | undefined;
+    if (o instanceof Mesh && mm) mm.opacity = 0.035;
+  }));
+  const drawName = { opengl: 'glDrawElements', vulkan: 'vkCmdDrawIndexed', d3d12: 'DrawIndexedInstanced' }[api];
+  const drawLbl = label(`${drawName}(${m.indices.length.toLocaleString('en-US')})`, 'amber');
+  drawLbl.position.set(bc.x, bc.y + bs.y / 2 + 0.5, bc.z);
+  ms.scene.add(drawLbl);
+  // Step 3: the real software render as a framebuffer.
+  const SW = 64;
+  const SH = 40;
+  const screen = ms.screenPlane(ctx.derived.render(api, SW, SH).color, SW, SH, 1.2);
+  screen.mesh.position.set(-1.62, 0.55, 0.3);
+  screen.mesh.lookAt(ms.camera.position);
+  const screenLbl = label(`${SW}×${SH} · ${t(L('swapchain-bild', 'swapchain image'))}`, 'amber');
+  screenLbl.position.set(-1.62, 0.55 + (1.2 * SH) / SW / 2 + 0.16, 0.3);
+  // Step 2: the faces that point away, drawn on their own in red (they are culled).
+  const backMat = ms.material.clone() as typeof ms.material;
+  backMat.uniforms = { ...ms.material.uniforms, uBackTint: { value: 0.85 }, uOpacity: { value: 1 }, uModeMix: { value: 0 } };
+  backMat.side = BackSide;
+  // three.js flips the winding for BackSide, so gl_FrontFacing is true here: tint unconditionally.
+  backMat.fragmentShader = backMat.fragmentShader
+    .replace('if (!gl_FrontFacing) n = -n;', 'n = -n;')
+    .replace('if (!gl_FrontFacing) c = mix(', 'c = mix(');
+  backMat.transparent = false;
+  const back = new Mesh(ms.layers.solid.geometry, backMat);
+  back.renderOrder = -1;
+  back.visible = false;
+  ms.pivot.add(back);
+  ms.scene.add(screenLbl);
 
-  // Lane backdrops, drawn behind everything.
-  const lanes = LANES.map((lane, li) => {
-    const g = s('g', { class: 'ov-lane' }, [
-      s('rect', { x: 6, y: laneTop[li], width: VW - 12, height: laneH, rx: 14, fill: lane.color, 'fill-opacity': 0.045, stroke: lane.color, 'stroke-opacity': 0.25 }),
-      s('text', { x: li === 3 ? 880 : VW - 20, y: laneTop[li] + 19, fill: lane.color, 'text-anchor': 'end', class: 'ov-lane-title' }, [t(lane.title)]),
-    ]);
-    svg.insertBefore(g, svg.firstChild!.nextSibling);
-    return g;
-  });
-
-  // The final image (real software render of the loaded mesh at 160×100).
-  const imgW = 144;
-  const imgH = (imgW * RH) / RW;
-  const ix = slotX(5) - imgW / 2 + 4;
-  const iy = laneTop[3] + laneH - imgH - 6;
-  const screen = s('g', { class: 'ov-screen' }, [
-    s('rect', { x: ix - 5, y: iy - 5, width: imgW + 10, height: imgH + 10, rx: 8, class: 'ov-screen-frame' }),
-    s('image', { href: renderImage(ctx), x: ix, y: iy, width: imgW, height: imgH, preserveAspectRatio: 'none', style: 'image-rendering: pixelated' }),
-    s('text', { x: ix + imgW / 2, y: iy - 12, 'text-anchor': 'middle', class: 'ov-screen-label' }, [`${RW}×${RH} · ${t(L('verklig CPU-rendering', 'real CPU render'))}`]),
-  ]);
-  const presentNode = nodes.find((n) => n.id === 'present')!;
-  const link = s('path', {
-    d: `M${presentNode.x + 78},${presentNode.y} L${ix - 8},${presentNode.y}`,
-    class: 'edge live',
-    'marker-end': 'url(#arrow)',
-  });
-  const screenG = s('g', {}, [link, screen]);
-  svg.append(screenG);
-
-  // Clickable nodes → jump to that slide.
-  for (const lane of LANES) {
-    for (const st of lane.stages) {
-      const g = flow.node(st.id);
-      if (!g) continue;
-      g.classList.add('ov-click');
-      g.dataset.lane = String(LANES.indexOf(lane));
-      const title = s('title', {}, [`${t(L('Gå till', 'Go to'))}: ${t(st.label)}`]);
-      g.prepend(title);
-      g.addEventListener('click', () => goTo(st.slide));
-    }
+  // Particle flights (world space, targets recomputed from the model's current pose).
+  const N = Math.min(2400, Math.max(700, m.vertexCount));
+  const textFlow = ms.particles(N, COLORS.cyan, 0.028, 'world');
+  const busFlow = ms.particles(N, COLORS.violet, 0.03, 'world');
+  ms.pivot.updateMatrixWorld(true);
+  page.mesh.updateMatrixWorld(true);
+  const textFrom = page.sample(N);
+  for (let i = 0; i < N; i++) world.fromArray(textFrom, i * 3).applyMatrix4(page.mesh.matrixWorld).toArray(textFrom, i * 3);
+  const ramFrom = new Float32Array(N * 3);
+  const side = Math.ceil(Math.cbrt(N));
+  for (let i = 0; i < N; i++) {
+    // Packed, in buffer order: a dense lattice inside the RAM box.
+    ramFrom[i * 3] = RX + ((i % side) / (side - 1 || 1) - 0.5) * 0.52;
+    ramFrom[i * 3 + 1] = 0.15 + ((Math.floor(i / side) % side) / (side - 1 || 1) - 0.5) * 0.52;
+    ramFrom[i * 3 + 2] = ((Math.floor(i / (side * side)) % side) / (side - 1 || 1) - 0.5) * 0.52;
   }
-  const edgeGroups = Array.from(svg.querySelectorAll<SVGGElement>('g.edge-g'));
-
-  return {
-    show(step, animate) {
-      flow.show(step, animate);
-      lanes.forEach((g, i) => {
-        g.classList.toggle('cur', i === step);
-        gsap.to(g, { opacity: i <= step ? 1 : 0.18, duration: animate ? dur(0.4) : 0 });
-      });
-      // Dim earlier lanes a little so the current one pops.
-      LANES.forEach((lane, li) =>
-        lane.stages.forEach((st) => flow.node(st.id)?.classList.toggle('dim', li < step)),
-      );
-      // Packets only on the current lane and the edge leading into it.
-      edges.forEach((e, i) => {
-        const on = (e.step ?? 0) === step;
-        edgeGroups[i]?.querySelectorAll('circle').forEach((c) => ((c as SVGElement).style.display = on ? '' : 'none'));
-        edgeGroups[i]?.classList.toggle('dim', !on);
-      });
-      const showScreen = step >= 3;
-      if (animate && showScreen) gsap.fromTo(screenG, { opacity: 0, x: -20 }, { opacity: 1, x: 0, duration: dur(0.7), delay: dur(0.4), ease: 'power2.out' });
-      else gsap.set(screenG, { opacity: showScreen ? 1 : 0, x: 0 });
-      if (animate) {
-        const cur = LANES[step].stages.map((st) => flow.node(st.id)).filter(Boolean) as SVGGElement[];
-        gsap.fromTo(cur, { opacity: 0, y: 10 }, { opacity: 1, y: 0, stagger: 0.08, duration: dur(0.4), ease: 'power2.out' });
-      }
-    },
-    destroy() {
-      gsap.killTweensOf([screenG, ...lanes]);
-    },
-  };
-}
-
-/* ------------------------------------------------------------------ */
-/* Concept: a glowing conveyor – text → floats → buffers → triangles → */
-/* pixels → screen                                                     */
-/* ------------------------------------------------------------------ */
-interface Packet {
-  x: number; // px along the track
-  v: number; // px / s
-  seed: number;
-  culled: boolean;
-  dead: boolean;
-  fall: number;
-}
-
-function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
-  const { t } = ctx;
-  const wrap = h('div.v-fill.ov-concept');
-  const canvas = h('canvas.ov-canvas');
-  const overlay = h('div.ov-overlay');
-  const caption = h('div.ov-caption');
-  wrap.append(canvas, overlay, caption);
-  host.append(wrap);
-  const g2 = canvas.getContext('2d')!;
-
-  // The final picture comes from the real software render, revealed block by block.
-  const r = ctx.derived.render(ctx.state.api, RW, RH);
-  const img = document.createElement('canvas');
-  img.width = RW;
-  img.height = RH;
-  img.getContext('2d')!.putImageData(new ImageData(new Uint8ClampedArray(r.color), RW, RH), 0, 0);
-  const BX = 16;
-  const BY = 10;
-  const revealed = new Uint8Array(BX * BY);
-  let revealCount = 0;
-  const revealOne = () => {
-    if (revealCount >= revealed.length) return;
-    let i = Math.floor(Math.random() * revealed.length);
-    while (revealed[i]) i = (i + 1) % revealed.length;
-    revealed[i] = 1;
-    revealCount++;
+  const home = ms.samplePositions(N);
+  const homeWorld = () => {
+    ms.pivot.updateMatrixWorld(true);
+    const out = new Float32Array(N * 3);
+    for (let i = 0; i < N; i++) world.fromArray(home, i * 3).applyMatrix4(ms.pivot.matrixWorld).toArray(out, i * 3);
+    return out;
   };
 
-  // Glow sprites (cheaper than shadowBlur on every packet).
-  const sprite = (hex: string) => {
-    const c = document.createElement('canvas');
-    c.width = c.height = 64;
-    const x = c.getContext('2d')!;
-    const gr = x.createRadialGradient(32, 32, 0, 32, 32, 32);
-    gr.addColorStop(0, hex + 'ff');
-    gr.addColorStop(0.25, hex + '88');
-    gr.addColorStop(1, hex + '00');
-    x.fillStyle = gr;
-    x.fillRect(0, 0, 64, 64);
-    return c;
-  };
-  const ZONE_HEX = ['#38e1ff', '#9b7bff', '#ff3fd2', '#ffb547'];
-  const glows = ZONE_HEX.map(sprite);
-  const redGlow = sprite('#ff5a6e');
-
-  // Geometry (CSS px), recomputed on resize.
-  let W = 0;
-  let H = 0;
-  let trackY = 0;
-  let zones: { x0: number; x1: number }[] = [];
-  let screenRect = { x: 0, y: 0, w: 0, h: 0 };
-  let x0 = 0;
-  const captionEls: HTMLElement[] = [];
-
-  LANES.forEach((lane, li) => {
-    const list = h('div.ov-zone-cap', {}, [
-      h('div.ov-zone-title', { text: t(lane.title), style: { color: lane.color } }),
-      ...lane.stages.map((st) =>
-        h('button.ov-stage', { text: t(st.label), style: { color: GROUP_HEX[st.group] }, on: { click: () => goTo(st.slide) } }),
-      ),
-    ]);
-    list.dataset.lane = String(li);
-    overlay.append(list);
-    captionEls.push(list);
-  });
-  const screenLabel = h('div.ov-screen-cap', { text: t(L('Skärm', 'Screen')) });
-  overlay.append(screenLabel);
-
-  const layout = () => {
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    W = wrap.clientWidth;
-    H = wrap.clientHeight;
-    canvas.width = Math.round(W * dpr);
-    canvas.height = Math.round(H * dpr);
-    g2.setTransform(dpr, 0, 0, dpr, 0, 0);
-    const pad = 18;
-    const sw = Math.min(W * 0.17, 190);
-    const sh = (sw * RH) / RW;
-    trackY = Math.round(Math.max(56, H * 0.24));
-    const right = W - pad - sw - 26;
-    x0 = pad + 14;
-    const zw = (right - x0 - 3 * 12) / 4;
-    zones = [0, 1, 2, 3].map((i) => ({ x0: x0 + i * (zw + 12), x1: x0 + i * (zw + 12) + zw }));
-    screenRect = { x: W - pad - sw, y: trackY - sh / 2, w: sw, h: sh };
-    captionEls.forEach((el, i) => {
-      Object.assign(el.style, { left: `${zones[i].x0}px`, width: `${zw}px`, top: `${trackY + 46}px` });
-    });
-    Object.assign(screenLabel.style, { left: `${screenRect.x}px`, width: `${sw}px`, top: `${screenRect.y + sh + 10}px` });
-  };
-
-  let step = 0;
-  const packets: Packet[] = [];
-  let spawnAcc = 0;
-  const spawn = (x = x0 - 10) => packets.push({ x, v: 70 + Math.random() * 40, seed: Math.random(), culled: Math.random() < 0.22, dead: false, fall: 0 });
-  const endX = () => (step >= 3 ? screenRect.x + screenRect.w / 2 : zones[step].x1 - 6);
-
-  // Pre-seed so a static frame (reduced motion / jump) already shows a full stream.
-  const seed = () => {
-    packets.length = 0;
-    const e = endX();
-    for (let x = x0; x < e; x += 34 + Math.random() * 18) spawn(x);
-  };
-
-  const zoneOf = (x: number) => {
-    for (let i = 0; i < 4; i++) if (x < zones[i].x1 + 6) return i;
-    return 4;
-  };
-  const glyphs = ['v', 'f', 'vn', '0.5', '1/2', '−.7', 'vt', '3.1'];
-
-  const drawPacket = (p: Packet, time: number) => {
-    const zi = zoneOf(p.x);
-    const y = trackY + p.fall;
-    const alpha = p.dead ? 0 : Math.max(0, 1 - p.fall / 60);
-    if (alpha <= 0) return;
-    g2.globalAlpha = alpha;
-    const glow = p.culled && zi === 2 && p.x > (zones[2].x0 + zones[2].x1) / 2 ? redGlow : glows[Math.min(zi, 3)];
-    g2.drawImage(glow, p.x - 18, y - 18, 36, 36);
-    g2.fillStyle = '#fff';
-    g2.strokeStyle = ZONE_HEX[Math.min(zi, 3)];
-    g2.lineWidth = 1.6;
-    if (zi === 0) {
-      const z = zones[0];
-      const f = (p.x - z.x0) / (z.x1 - z.x0);
-      if (f < 0.45) {
-        g2.font = '600 12px JetBrains Mono, monospace';
-        g2.textAlign = 'center';
-        g2.fillStyle = '#bff4ff';
-        g2.fillText(glyphs[Math.floor(p.seed * glyphs.length)], p.x, y + 4);
-      } else {
-        g2.fillStyle = '#bff4ff';
-        for (let k2 = 0; k2 < 3; k2++) {
-          g2.beginPath();
-          g2.arc(p.x - 6 + k2 * 6, y, 2.2, 0, Math.PI * 2);
-          g2.fill();
-        }
-      }
-    } else if (zi === 1) {
-      g2.fillStyle = 'rgba(155,123,255,0.35)';
-      g2.fillRect(p.x - 7, y - 7, 14, 14);
-      g2.strokeRect(p.x - 7, y - 7, 14, 14);
-      g2.beginPath();
-      g2.moveTo(p.x - 7, y);
-      g2.lineTo(p.x + 7, y);
-      g2.stroke();
-    } else if (zi === 2) {
-      const a = time * 1.6 + p.seed * 6;
-      const red = p.culled && p.x > (zones[2].x0 + zones[2].x1) / 2;
-      g2.strokeStyle = red ? '#ff5a6e' : '#ff3fd2';
-      g2.beginPath();
-      for (let k2 = 0; k2 < 3; k2++) {
-        const ang = a + (k2 * Math.PI * 2) / 3;
-        const px = p.x + Math.cos(ang) * 9;
-        const py = y + Math.sin(ang) * 9 * 0.8;
-        if (k2) g2.lineTo(px, py);
-        else g2.moveTo(px, py);
-      }
-      g2.closePath();
-      g2.stroke();
-    } else {
-      // pixel shards
-      const spread = zi === 3 ? Math.min(1, (p.x - zones[3].x0) / (zones[3].x1 - zones[3].x0)) : 1;
-      g2.fillStyle = '#ffd08a';
-      for (let k2 = 0; k2 < 6; k2++) {
-        const ang = p.seed * 10 + k2;
-        const d = 3 + spread * 9;
-        g2.fillRect(p.x + Math.cos(ang) * d - 2, y + Math.sin(ang) * d - 2, 4, 4);
-      }
-    }
-    g2.globalAlpha = 1;
-  };
-
-  const draw = (time: number) => {
-    g2.clearRect(0, 0, W, H);
-    // Track
-    const e = endX();
-    const grad = g2.createLinearGradient(x0, 0, screenRect.x, 0);
-    ZONE_HEX.forEach((c, i) => grad.addColorStop(i / 3, c));
-    g2.lineCap = 'round';
-    g2.strokeStyle = 'rgba(140,160,255,0.12)';
-    g2.lineWidth = 6;
-    g2.beginPath();
-    g2.moveTo(x0, trackY);
-    g2.lineTo(screenRect.x - 8, trackY);
-    g2.stroke();
-    g2.save();
-    g2.strokeStyle = grad;
-    g2.lineWidth = 3;
-    g2.shadowColor = 'rgba(155,123,255,0.9)';
-    g2.shadowBlur = 12;
-    g2.setLineDash([10, 8]);
-    g2.lineDashOffset = -time * 40;
-    g2.beginPath();
-    g2.moveTo(x0, trackY);
-    g2.lineTo(Math.min(e, screenRect.x - 8), trackY);
-    g2.stroke();
-    g2.restore();
-
-    // Zones ("machines")
-    zones.forEach((z, i) => {
-      const on = i <= step;
-      const cur = i === step;
-      const c = ZONE_HEX[i];
-      g2.save();
-      g2.globalAlpha = on ? 1 : 0.25;
-      g2.fillStyle = c + (cur ? '1f' : '10');
-      g2.strokeStyle = c + (cur ? 'dd' : '66');
-      g2.lineWidth = cur ? 2 : 1.2;
-      if (cur) {
-        g2.shadowColor = c;
-        g2.shadowBlur = 18 + Math.sin(time * 3) * 6;
-      }
-      const ry = trackY - 34;
-      g2.beginPath();
-      g2.roundRect(z.x0, ry, z.x1 - z.x0, 68, 14);
-      g2.fill();
-      g2.stroke();
-      g2.restore();
-      // sub-stage ticks along the track
-      const n = LANES[i].stages.length;
-      LANES[i].stages.forEach((st, si) => {
-        const tx = z.x0 + ((si + 0.5) / n) * (z.x1 - z.x0);
-        g2.fillStyle = GROUP_HEX[st.group];
-        g2.globalAlpha = on ? 0.9 : 0.25;
-        g2.beginPath();
-        g2.arc(tx, trackY + 26, 3, 0, Math.PI * 2);
-        g2.fill();
-        g2.globalAlpha = 1;
-      });
-    });
-
-    // Screen
-    const sr = screenRect;
-    g2.save();
-    g2.fillStyle = '#04060f';
-    g2.strokeStyle = step >= 3 ? '#ffb547' : 'rgba(140,160,255,0.3)';
-    g2.lineWidth = 2;
-    if (step >= 3) {
-      g2.shadowColor = '#ffb547';
-      g2.shadowBlur = 20;
-    }
-    g2.beginPath();
-    g2.roundRect(sr.x - 6, sr.y - 6, sr.w + 12, sr.h + 12, 10);
-    g2.fill();
-    g2.stroke();
-    g2.restore();
-    if (step >= 3) {
-      g2.imageSmoothingEnabled = false;
-      const bw = RW / BX;
-      const bh = RH / BY;
-      for (let by = 0; by < BY; by++) {
-        for (let bx = 0; bx < BX; bx++) {
-          if (!revealed[by * BX + bx]) continue;
-          g2.drawImage(img, bx * bw, by * bh, bw, bh, sr.x + (bx * sr.w) / BX, sr.y + (by * sr.h) / BY, sr.w / BX + 0.5, sr.h / BY + 0.5);
-        }
-      }
-      // scanline shimmer
-      const sy = sr.y + ((time * 60) % sr.h);
-      g2.fillStyle = 'rgba(255,255,255,0.06)';
-      g2.fillRect(sr.x, sy, sr.w, 2);
-    } else {
-      g2.fillStyle = 'rgba(154,163,199,0.4)';
-      g2.font = '11px JetBrains Mono, monospace';
-      g2.textAlign = 'center';
-      g2.fillText('no signal', sr.x + sr.w / 2, sr.y + sr.h / 2 + 4);
-    }
-
-    for (const p of packets) drawPacket(p, time);
-  };
-
-  let raf = 0;
-  let last = performance.now();
-  const start = last;
-  const still = reducedMotion();
-  const frame = (now: number) => {
-    const dt = Math.min(0.05, (now - last) / 1000);
-    last = now;
-    if (!still) {
-      spawnAcc += dt;
-      if (spawnAcc > 0.42) {
-        spawnAcc = 0;
-        spawn();
-      }
-      const e = endX();
-      for (const p of packets) {
-        p.x += p.v * dt * (p.x < zones[0].x0 ? 1.4 : 1);
-        if (p.culled && zoneOf(p.x) === 2 && p.x > (zones[2].x0 + zones[2].x1) / 2 + 10) p.fall += dt * 90;
-        if (p.x >= e) {
-          p.dead = true;
-          if (step >= 3) revealOne();
-        }
-        if (p.fall > 60) p.dead = true;
-      }
-      for (let i = packets.length - 1; i >= 0; i--) if (packets[i].dead) packets.splice(i, 1);
-    }
-    draw((now - start) / 1000);
-    raf = requestAnimationFrame(frame);
-  };
-
-  const ro = new ResizeObserver(() => {
-    layout();
-    draw((performance.now() - start) / 1000);
-  });
-  ro.observe(wrap);
-  layout();
-  raf = requestAnimationFrame(frame);
-
-  const captions = [
-    L('Text och bytes från filen blir siffror i CPU-minnet.', 'Text and bytes from the file become numbers in CPU memory.'),
-    L('API:t och drivrutinen packar siffrorna i GPU-buffertar och spelar in kommandon.', 'The API and driver pack the numbers into GPU buffers and record commands.'),
-    L('GPU:n gör om vertices till trianglar på skärmen – de som vänder bort eller hamnar utanför slängs (röda).', 'The GPU turns vertices into triangles on screen – those facing away or outside are discarded (red).'),
-    L('Trianglarna splittras i pixlar som färgas, djuptestas och landar i bilden som visas.', 'Triangles shatter into pixels that are shaded, depth tested and land in the image that is shown.'),
+  /* ---- panels ---- */
+  const fmt = m.format === 'builtin' ? 'OBJ' : m.format;
+  const stats: HTMLElement[][] = [
+    [stat(formatBytes(m.fileSize), `${fmt} · ${t(L('på disk', 'on disk'))}`, 'glow-amber'), stat(k(m.vertexCount), 'vertices', 'glow-cyan'), stat(k(m.triangleCount), t(L('trianglar', 'triangles')), 'glow-magenta')],
+    [stat(formatBytes(l.vertexBytes + l.indexBytes), 'VB + IB', 'glow-cyan'), stat(`${l.stride} B`, 'stride'), stat(k(m.indices.length), t(L('index i draw', 'indices drawn')), 'glow-amber')],
+    [stat(k(st.trianglesIn), t(L('trianglar in', 'triangles in'))), stat(k(st.culled), t(L('bortvända · culled', 'back-faces culled')), 'glow-magenta'), stat(k(st.clippedAway + st.clipped), t(L('klippta', 'clipped')))],
+    [stat(k(st.fragments), 'fragments', 'glow-amber'), stat(k(st.written), t(L('pixlar skrivna', 'pixels written')), 'glow-cyan'), stat(k(st.depthRejected), t(L('djup-avvisade', 'depth-rejected')))],
   ];
+  const hints: Text[] = [
+    L(`Parsat från ${fmt}, packat ${l.stride} B per vertex i RAM.`, `Parsed from ${fmt}, packed ${l.stride} B per vertex in RAM.`),
+    L(`Uppladdat till VRAM; ett ${drawName} ritar allt.`, `Uploaded to VRAM; one ${drawName} draws it all.`),
+    L(`Räknat av CPU-rastreraren vid ${RW}×${RH} – röda ytor vänder bort och slängs.`, `Counted by the CPU rasterizer at ${RW}×${RH} – red faces point away and are discarded.`),
+    L(`Vid ${RW}×${RH}; bilden till vänster är den verkliga renderingen.`, `At ${RW}×${RH}; the image on the left is the real render.`),
+  ];
+  const captions: Text[] = [
+    L('Text och bytes från filen blir siffror i CPU-minnet – tecknen blir punkter som bildar modellen.', 'Text and bytes from the file become numbers in CPU memory – the characters turn into points that form the model.'),
+    L('API:t och drivrutinen flyttar siffrorna från RAM till GPU:ns VRAM, där de bildar modellen igen. Sedan spelas ett draw-kommando in.', 'The API and driver move the numbers from RAM into the GPU\'s VRAM, where they form the model again. Then a draw command is recorded.'),
+    L('GPU:n transformerar varje vertex och sätter ihop trianglar. De som vänder bort (röda) eller hamnar utanför slängs.', 'The GPU transforms every vertex and assembles triangles. Those facing away (red) or outside the view are discarded.'),
+    L('Trianglarna blir pixlar som färgas, djuptestas och hamnar i swapchain-bilden som visas på skärmen.', 'Triangles become pixels that are shaded, depth tested and land in the swapchain image shown on screen.'),
+  ];
+  const info = ms.panel(t(LANES[0].title), [], { side: 'right', className: 'ov-info' });
+  const infoTitle = info.querySelector('.ms-head span')!;
+  const infoBody = info.querySelector('.ms-body')!;
+
+  const laneEls = LANES.map((lane) => {
+    const chips = lane.stages.map((sg) =>
+      h('button.ov-chip', { attrs: { type: 'button', title: `${t(L('Gå till', 'Go to'))}: ${t(sg.label)}` }, style: { color: GROUP_HEX[sg.group] }, on: { click: () => goTo(sg.slide) } }, [
+        h('span', { text: t(sg.label) }),
+        concept ? null : h('small', { text: notes[sg.id] }),
+      ]),
+    );
+    const el = ms.panel(t(lane.title), [h('div.ov-chips', {}, chips)], { side: 'bottom', className: 'ov-lane-panel', collapsed: true });
+    el.style.setProperty('--lane', lane.color);
+    return el;
+  });
+
+  /* ---- animation state ---- */
+  let step = -1;
+  let flying = false;
+  const timers: gsap.core.Tween[] = [];
+  const later = (animate: boolean, s: number, fn: () => void) => {
+    if (!animate) fn();
+    else timers.push(gsap.delayedCall(dur(s), fn));
+  };
+  const fly = (p: Particles, from: Float32Array, animate: boolean, s: number, after: () => void) => {
+    p.setTargets(from, homeWorld());
+    p.points.visible = true;
+    p.progress(0, 0);
+    if (!animate) {
+      p.points.visible = false;
+      after();
+      return;
+    }
+    flying = true;
+    p.progress(1, s);
+    later(true, s + 0.1, () => {
+      flying = false;
+      p.points.visible = false;
+      after();
+    });
+  };
+  const pmat = (p: Particles) => (p.points.material as ShaderMaterial).uniforms.uProgress;
+
+  ms.onFrame((time, dt) => {
+    if (concept && !flying) ms.pivot.rotation.y += dt * 0.2;
+    if (step === 2) u.uExplode.value = 0.05 + 0.035 * Math.sin(time * 1.8);
+  });
 
   return {
-    show(st, animate) {
-      step = st;
-      layout();
-      if (!animate) seed();
-      if (step >= 3 && (!animate || still)) {
-        revealed.fill(1);
-        revealCount = revealed.length;
-      } else if (step < 3) {
-        revealed.fill(0);
-        revealCount = 0;
-      }
-      captionEls.forEach((el, i) => {
-        el.classList.toggle('on', i <= step);
+    show(stp, animate) {
+      step = stp;
+      const S = (s: number) => secs(animate, s);
+      timers.splice(0).forEach((x) => x.kill());
+      gsap.killTweensOf([...Object.values(u), ...Object.values(ms.layers).map((x) => x.material), page.mat, pmat(textFlow), pmat(busFlow)]);
+      flying = false;
+      u.uSweep.value = 100;
+
+      // Panels
+      infoTitle.textContent = t(LANES[step].title);
+      infoBody.replaceChildren(
+        ...(concept ? [h('p.ov-cap', { html: t(captions[step]) })] : [h('div.stat-row', {}, stats[step]), h('div.hint.ov-hint', { text: t(hints[step]) })]),
+      );
+      info.style.setProperty('--lane', LANES[step].color);
+      laneEls.forEach((el, i) => {
+        el.classList.toggle('collapsed', i !== step);
         el.classList.toggle('cur', i === step);
+        el.classList.toggle('done', i < step);
       });
-      screenLabel.classList.toggle('on', step >= 3);
-      caption.innerHTML = t(captions[step]);
-      if (animate) {
-        gsap.fromTo(caption, { opacity: 0, y: 8 }, { opacity: 1, y: 0, duration: dur(0.4) });
-        gsap.fromTo(captionEls[step], { opacity: 0, y: 12 }, { opacity: 1, y: 0, duration: dur(0.45), ease: 'power2.out' });
+      if (animate) gsap.fromTo(info, { opacity: 0, y: -8 }, { opacity: 1, y: 0, duration: dur(0.4) });
+
+      // Reset everything that differs between steps.
+      page.mesh.visible = step === 0;
+      ram.visible = step === 1;
+      vram.visible = step === 1;
+      drawLbl.visible = step === 1;
+      screen.mesh.visible = step === 3;
+      screenLbl.visible = step === 3;
+      textFlow.points.visible = false;
+      busFlow.points.visible = false;
+      back.visible = step === 2;
+      ms.material.depthWrite = step !== 2;
+      ms.material.needsUpdate = true;
+      ms.setMode(step === 2 ? 'triangleId' : 'shaded', 0.35, S(0.6));
+      if (step !== 2) ms.explode(0, S(0.5));
+      ms.highlightTriangle(null);
+
+      if (step === 0) {
+        // Text → numbers → points that assemble into the model.
+        ms.setLayer('solid', 0, S(0.4));
+        ms.setLayer('wire', 0, S(0.4));
+        ms.setLayer('points', 0, 0);
+        page.mat.opacity = animate ? 0.9 : 0.14;
+        if (animate) ms.tween(page.mat, { opacity: 0.14, duration: dur(2.6), delay: dur(0.5), ease: 'power1.in' });
+        fly(textFlow, textFrom, animate, 2.8, () => {
+          ms.setLayer('points', 0.85, S(0.5));
+          ms.setLayer('wire', 0.12, S(0.8));
+        });
+      } else if (step === 1) {
+        // RAM → VRAM: the packed data streams across and forms the model again.
+        ms.setLayer('solid', 0, S(0.3));
+        ms.setLayer('wire', 0, S(0.3));
+        ms.setLayer('points', 0, S(0.3));
+        fly(busFlow, ramFrom, animate, 2.6, () => {
+          ms.setMode('ghost', 1, 0);
+          ms.setLayer('points', 0.6, S(0.4));
+          ms.setLayer('wire', 0.22, S(0.6));
+          ms.setLayer('solid', 1, S(0.8));
+        });
+      } else if (step === 2) {
+        // Geometry: vertices transformed (gently pulsing apart), triangles assembled, back-faces culled (red).
+        ms.setLayer('solid', 0.45, S(0.6));
+        ms.setLayer('wire', 0.3, S(0.6));
+        ms.setLayer('points', 0.9, S(0.6));
+        ms.highlightTriangle(ctx.derived.showcaseTriangle(api), COLORS.green);
       } else {
-        gsap.set([caption, ...captionEls], { opacity: '', y: 0 });
+        // Pixels: the triangles are filled in and the real framebuffer appears.
+        ms.setLayer('solid', 1, S(0.4));
+        ms.setLayer('wire', 0, S(0.8));
+        ms.setLayer('points', 0, S(0.8));
+        if (animate) ms.sweep('shaded', 'ghost', 1.6);
+        screen.reveal(0, 0);
+        screen.reveal(1, S(2.2));
       }
     },
     destroy() {
-      cancelAnimationFrame(raf);
-      ro.disconnect();
-      gsap.killTweensOf([caption, ...captionEls]);
+      timers.forEach((x) => x.kill());
+      gsap.killTweensOf(info);
+      page.tex.dispose();
+      backMat.dispose();
+      ms.destroy();
     },
   };
 }
@@ -762,6 +602,6 @@ export default standardSlide({
     ),
   ],
   api: apis,
-  data: dataVisual,
-  concept: conceptVisual,
+  data: (host, ctx) => journeyVisual(host, ctx, false),
+  concept: (host, ctx) => journeyVisual(host, ctx, true),
 });

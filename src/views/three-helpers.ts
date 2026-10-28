@@ -3,6 +3,7 @@ import {
   AmbientLight,
   BufferAttribute,
   BufferGeometry,
+  CanvasTexture,
   Color,
   EdgesGeometry,
   LineBasicMaterial,
@@ -69,6 +70,23 @@ export function vertexPoints(mesh: MeshData, color = COLORS.cyan, size = 0.035):
   );
 }
 
+let glowTex: CanvasTexture | null = null;
+/** Soft round glow sprite texture (shared). */
+export function glowTexture(): CanvasTexture {
+  if (glowTex) return glowTex;
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const g = c.getContext('2d')!;
+  const grad = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grad.addColorStop(0, 'rgba(255,255,255,1)');
+  grad.addColorStop(0.25, 'rgba(255,255,255,0.8)');
+  grad.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 64, 64);
+  glowTex = new CanvasTexture(c);
+  return glowTex;
+}
+
 /** A slowly drifting field of glowing dust behind the scene. */
 export function starfield(count = 900, radius = 18): Points & { tick: (t: number) => void } {
   const pos = new Float32Array(count * 3);
@@ -87,7 +105,7 @@ export function starfield(count = 900, radius = 18): Points & { tick: (t: number
   g.setAttribute('color', new BufferAttribute(col, 3));
   const pts = new Points(
     g,
-    new PointsMaterial({ size: 0.06, vertexColors: true, transparent: true, opacity: 0.8, blending: AdditiveBlending, depthWrite: false }),
+    new PointsMaterial({ size: 0.09, map: glowTexture(), vertexColors: true, transparent: true, opacity: 0.85, blending: AdditiveBlending, depthWrite: false }),
   ) as unknown as Points & { tick: (t: number) => void };
   pts.tick = (t) => {
     pts.rotation.y = t * 0.02;

@@ -3,14 +3,17 @@ import hljs from 'highlight.js/lib/core';
 import cpp from 'highlight.js/lib/languages/cpp';
 import glsl from 'highlight.js/lib/languages/glsl';
 import llvm from 'highlight.js/lib/languages/llvm';
-import { Matrix3 } from 'three';
+import { ArrowHelper, Group, Matrix3, Vector3, type Sprite, type Texture } from 'three';
 import { dur, escapeHtml, h, reducedMotion } from '../core/dom';
 import { L } from '../core/i18n';
 import { SHOWCASE_ROT_X, SHOWCASE_ROT_Y } from '../core/derived';
 import type { ApiId } from '../core/state';
 import { AMBIENT, BASE_COLOR, LIGHT_DIR, SHININESS, VIEW_DIR, normalize, shade } from '../pipeline/shade';
 import { modelMatrix, type V3 } from '../pipeline/transform';
-import { card } from '../views/widgets';
+import { createModelStage, secs, type ModelStage } from '../views/ModelStage';
+import { textSprite } from '../views/ThreeStage';
+import { COLORS } from '../views/three-helpers';
+import { stat } from '../views/widgets';
 import '../styles/slides/shaders.css';
 import { standardSlide } from './standard';
 import type { ApiPanelSpec, SlideContext, Visual } from './types';
@@ -334,170 +337,271 @@ function chainStrip(api: ApiId, t: SlideContext['t']): { el: HTMLElement; set: (
 }
 
 /* ------------------------------------------------------------------ */
-/* Real data: the actual shader, its IR and an ISA excerpt              */
+/* 3D helpers: code fragments that fly into the model                   */
+/* ------------------------------------------------------------------ */
+const CSS = { cyan: '#38e1ff', magenta: '#ff3fd2', amber: '#ffb547', violet: '#9b7bff', green: '#5cf08f' };
+const API_CSS: Record<ApiId, string> = { opengl: '#5aa9e6', vulkan: '#ff4d64', d3d12: '#6cd04a' };
+
+type Where = () => Vector3;
+
+/** A stream of glowing code sprites that fly from `from` into `to` (by default: points on the model). */
+function codeStream(ms: ModelStage) {
+  const live = new Set<Sprite>();
+  let call: gsap.core.Tween | null = null;
+  const targets = ms.samplePositions(64);
+  /** A random vertex of the model, in world space. */
+  const onModel: Where = () => {
+    ms.pivot.updateMatrixWorld(true);
+    return new Vector3().fromArray(targets, Math.floor(Math.random() * 64) * 3).applyMatrix4(ms.pivot.matrixWorld);
+  };
+  const spawn = (text: string, color: string, from: Where, to: Where) => {
+    const sp = textSprite(text, color, 0.1);
+    sp.material.opacity = 0;
+    const v = to();
+    sp.position.copy(from());
+    ms.scene.add(sp);
+    live.add(sp);
+    const sx = sp.scale.x;
+    const sy = sp.scale.y;
+    const done = () => {
+      live.delete(sp);
+      sp.removeFromParent();
+      sp.material.map?.dispose();
+      sp.material.dispose();
+    };
+    ms.tween(sp.material, { opacity: 1, duration: dur(0.25) });
+    ms.tween(sp.position, { x: v.x, y: v.y, z: v.z, duration: dur(1.3), ease: 'power2.in' });
+    ms.tween(sp.scale, { x: sx * 0.25, y: sy * 0.25, duration: dur(1.3), ease: 'power2.in' });
+    ms.tween(sp.material, { opacity: 0, duration: dur(0.25), delay: dur(1.1), onComplete: done });
+  };
+  return {
+    onModel,
+    start(items: string[], color: string, every: number, from: Where, to: Where = onModel) {
+      this.stop();
+      if (reducedMotion() || !items.length) return;
+      let i = 0;
+      const tick = () => {
+        spawn(items[i++ % items.length], color, from, to);
+        call = gsap.delayedCall(every, tick);
+      };
+      tick();
+    },
+    stop() {
+      call?.kill();
+      call = null;
+    },
+    clear() {
+      this.stop();
+      live.forEach((sp) => {
+        gsap.killTweensOf([sp.position, sp.scale, sp.material]);
+        sp.removeFromParent();
+        sp.material.map?.dispose();
+        sp.material.dispose();
+      });
+      live.clear();
+    },
+  };
+}
+
+/** The orbiting sun passes close to the camera and then fills the view; keep its on-screen size steady. */
+function steadySun(ms: ModelStage): void {
+  const sun = ms.scene.children.find((o): o is Sprite => (o as Sprite).isSprite && (o as Sprite).material.color.getHex() === 0xfff1c4);
+  ms.onFrame(() => sun?.scale.setScalar(Math.min(0.45, 0.1 * sun.position.distanceTo(ms.camera.position))));
+}
+
+/** World-space light direction → model space (the arrows live in the model's pivot). */
+function toModel(ms: ModelStage, dir: Vector3): Vector3 {
+  return dir.clone().applyQuaternion(ms.pivot.quaternion.clone().invert()).normalize();
+}
+
+/* ------------------------------------------------------------------ */
+/* Real data: the app's shader, switched on term by term on the model   */
 /* ------------------------------------------------------------------ */
 function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
   const { t } = ctx;
   const api = ctx.state.api;
   const sp = shaderPair(api);
   const strip = chainStrip(api, t);
+  const ms = createModelStage(host, ctx, { shift: -0.17, autoRotate: 0, bloom: 0.5, bloomThreshold: 0.85 });
+  ms.overlay.classList.add('sh-ms');
 
-  // Step 0 – the source pair.
-  const srcPanel = h('div.sh-panel.sh-two', {}, [
-    card(`${sp.vsName} · ${lineCount(sp.vs)} ${t(L('rader', 'lines'))} · ${byteCount(sp.vs)} B`, [h('div.v-scroll.sh-scroll', {}, [codeEl(sp.vs, sp.lang)])], 'sh-card'),
-    card(`${sp.fsName} · ${lineCount(sp.fs)} ${t(L('rader', 'lines'))} · ${byteCount(sp.fs)} B`, [h('div.v-scroll.sh-scroll', {}, [codeEl(sp.fs, sp.lang)])], 'sh-card'),
-  ]);
-
-  // Step 1 – front end.
-  const cmd: Record<ApiId, string[]> = {
-    opengl: [
-      '// at run time, inside your process:',
-      'glShaderSource(fs, 1, &src, nullptr);',
-      'glCompileShader(fs);',
-      'glGetShaderiv(fs, GL_COMPILE_STATUS, &ok);  // GL_TRUE',
-      '// optional (GL 4.6 / GL_ARB_gl_spirv), offline:',
-      '// glslangValidator -G shade.frag -o shade.frag.spv',
-    ],
-    vulkan: [
-      '$ glslc --target-env=vulkan1.3 -O shade.vert -o shade.vert.spv',
-      '$ glslc --target-env=vulkan1.3 -O shade.frag -o shade.frag.spv',
-      '# or:  glslangValidator -V --target-env vulkan1.3 shade.frag',
-      '# or:  dxc -spirv -T ps_6_6 -E main shade_ps.hlsl',
-    ],
-    d3d12: [
-      '$ dxc -T vs_6_6 -E main shade_vs.hlsl -Fo shade_vs.cso',
-      '$ dxc -T ps_6_6 -E main shade_ps.hlsl -Fo shade_ps.cso',
-      '# runtime alternative: IDxcCompiler3::Compile()',
-    ],
-  };
-  const phases = [
-    [L('Förprocessor', 'Preprocess'), sp.lang === 'glsl' ? '#version 460, #define' : '#include, #define'],
-    [L('Parsning → AST', 'Parse → AST'), 'pow(max(dot(n, h), 0.0), 48.0)'],
-    [L('Typkontroll', 'Type check'), 'dot(vec3, vec3) → float'],
-    [L('Gränssnitt VS ↔ FS', 'Interface VS ↔ FS'), sp.lang === 'glsl' ? 'location 0: vNormal' : 'semantic NORMAL'],
-    [L('Optimering', 'Optimize'), t(L('konstantvikning, död kod', 'constant folding, dead code'))],
-    [L('Generera IR', 'Emit IR'), api === 'd3d12' ? 'DXIL (LLVM bitcode)' : api === 'vulkan' ? 'SPIR-V words' : t(L('drivrutinens egen IR', "driver's own IR"))],
-  ] as const;
-  const phaseEls = phases.map(([a, b]) => h('li.sh-phase', {}, [h('span.sh-tick', { text: '✓' }), h('b', { text: t(a) }), h('code', { text: b })]));
-  const fePanel = h('div.sh-panel.sh-fe', {}, [
-    card(api === 'opengl' ? t(L('Kompilering vid körtid', 'Compiling at run time')) : t(L('Byggsteg', 'Build step')), [
-      h('pre.sh-term', {}, cmd[api].map((l) => h('div', { text: l, attrs: { class: l.startsWith('$') ? 'cmd' : 'cmt' } }))),
-      h('ol.sh-phases', {}, phaseEls),
-    ], 'sh-card'),
-    card(t(L('Konstantvikning – riktiga värden', 'Constant folding – real values')), [
-      h('div.sh-fold', {}, [
-        h('code', { text: `LIGHT_DIR = normalize(0.5, 0.8, 0.6)` }),
-        h('div.sh-fold-arrow', { text: '↓' }),
-        h('code.glow-cyan', { text: `(${LIGHT_DIR.map(f4).join(', ')})` }),
-        h('code', { text: `h = normalize(LIGHT_DIR + (0, 0, 1))`, style: { marginTop: '10px' } }),
-        h('div.sh-fold-arrow', { text: '↓' }),
-        h('code.glow-magenta', { text: `(${HALF.map(f4).join(', ')})` }),
-        h('p.hint', {
-          html: t(L(
-            `Beräknas en gång vid kompilering, inte för varje pixel. <code>pow(x, ${SHININESS}.0)</code> blir kvar – back end skriver om den.`,
-            `Computed once at compile time, not per pixel. <code>pow(x, ${SHININESS}.0)</code> stays – the back end rewrites it.`,
-          )),
-        }),
-      ]),
-    ], 'sh-card'),
-  ]);
-
-  // Step 2 – IR.
-  const irTitle = api === 'd3d12' ? 'shade_ps.cso – DXIL' : 'shade.frag.spv – SPIR-V';
-  const irFacts: Record<ApiId, [string, string][]> = {
-    opengl: [
-      [t(L('Normalfall', 'Normal path')), t(L('IR:en är dold i drivrutinen (t.ex. Mesa: GLSL IR → NIR).', 'The IR is hidden inside the driver (e.g. Mesa: GLSL IR → NIR).'))],
-      ['GL_ARB_gl_spirv', t(L('Core i GL 4.6: glShaderBinary(GL_SHADER_BINARY_FORMAT_SPIR_V) + glSpecializeShader. Bara SPIR-V 1.0.', 'Core in GL 4.6: glShaderBinary(GL_SHADER_BINARY_FORMAT_SPIR_V) + glSpecializeShader. SPIR-V 1.0 only.'))],
-      ['magic', '0x07230203'],
-    ],
-    vulkan: [
-      ['magic', '0x07230203'],
-      ['version', '0x00010600 (1.6)'],
-      [t(L('format', 'format')), t(L('ström av 32-bitars ord, SSA-form, leverantörsneutral', 'stream of 32-bit words, SSA form, vendor neutral'))],
-      [t(L('laddas med', 'loaded by')), 'vkCreateShaderModule(codeSize, pCode)'],
-    ],
-    d3d12: [
-      ['container', "'DXBC' + DXIL-part"],
-      [t(L('innehåll', 'content')), t(L('LLVM 3.7-bitkod med dx.op-intrinsics', 'LLVM 3.7 bitcode with dx.op intrinsics'))],
-      [t(L('validering', 'validation')), t(L('signeras av validatorn (dxil.dll)', 'signed by the validator (dxil.dll)'))],
-      [t(L('används i', 'used in')), 'D3D12_SHADER_BYTECODE { pShaderBytecode, BytecodeLength }'],
-    ],
-  };
-  const irCode = api === 'd3d12' ? codeEl(dxilExcerpt(), 'llvm') : asmEl(spirvExcerpt(api));
-  const irPanel = h('div.sh-panel.sh-side', {}, [
-    card(`${irTitle} · ${t(L('utdrag (förkortat)', 'excerpt (abridged)'))}${api === 'opengl' ? ' · GL_ARB_gl_spirv' : ''}`, [h('div.v-scroll.sh-scroll', {}, [irCode])], 'sh-card'),
-    card(t(L('Fakta', 'Facts')), [h('dl.kv.sh-kv', {}, irFacts[api].flatMap(([k, v]) => [h('dt', { text: k }), h('dd', { text: v })]))], 'sh-card'),
-  ]);
-
-  // Step 3 – ISA + the shader evaluated on the CPU for the showcase triangle.
+  // The followed point: first corner of the showcase triangle.
   const tri = ctx.derived.showcaseTriangle(api);
   const vi = ctx.derived.triangleVertices(tri)[0];
+  const p = ctx.derived.position(vi);
   const nObj = ctx.derived.normal(vi);
   const nm = new Matrix3().setFromMatrix4(modelMatrix(SHOWCASE_ROT_Y, SHOWCASE_ROT_X)).elements;
-  const nWorld: V3 = [
+  const nWorld = new Vector3(
     nm[0] * nObj[0] + nm[3] * nObj[1] + nm[6] * nObj[2],
     nm[1] * nObj[0] + nm[4] * nObj[1] + nm[7] * nObj[2],
     nm[2] * nObj[0] + nm[5] * nObj[1] + nm[8] * nObj[2],
-  ];
-  const sh = shade(nWorld);
+  ).normalize();
+  const sh = shade([nWorld.x, nWorld.y, nWorld.z]);
   const rgb = sh.color.map((c) => Math.round(c * 255));
-  const when: Record<ApiId, string> = {
-    opengl: t(L('Vid glLinkProgram – ofta uppskjutet till första draw, ibland igen när state ändras. glGetProgramBinary kan cacha.', 'At glLinkProgram – often deferred to the first draw, sometimes again when state changes. glGetProgramBinary can cache it.')),
-    vulkan: t(L('I vkCreateGraphicsPipelines, när all state är känd. VkPipelineCache sparar den.', 'In vkCreateGraphicsPipelines, once all state is known. A VkPipelineCache keeps it.')),
-    d3d12: t(L('I CreateGraphicsPipelineState, när all state är känd. ID3D12PipelineLibrary sparar den.', 'In CreateGraphicsPipelineState, once all state is known. An ID3D12PipelineLibrary keeps it.')),
-  };
-  const isaPanel = h('div.sh-panel.sh-side', {}, [
-    card(t(L('GPU ISA – illustrativt utdrag (RDNA-liknande)', 'GPU ISA – illustrative excerpt (RDNA-like)')), [h('div.v-scroll.sh-scroll', {}, [asmEl(isaExcerpt())])], 'sh-card.sh-isa'),
-    card(t(L('När skapas maskinkoden?', 'When is machine code made?')), [
-      h('p.sh-when', { text: when[api] }),
-      h('div.sh-eval', {}, [
-        h('div.hint', { text: t(L(`Samma shader på CPU:n · triangel #${tri}, vertex ${vi}`, `Same shader on the CPU · triangle #${tri}, vertex ${vi}`)) }),
-        h('dl.kv', {}, [
-          h('dt', { text: 'diff' }),
-          h('dd.glow-cyan', { text: sh.diffuse.toFixed(4) }),
-          h('dt', { text: 'spec' }),
-          h('dd.glow-magenta', { text: sh.specular.toFixed(4) }),
-          h('dt', { text: 'n' }),
-          h('dd', { text: sh.n.map((x) => x.toFixed(3)).join(', '), style: { gridColumn: 'span 3' } }),
-          h('dt', { text: 'out' }),
-          h('dd', { style: { gridColumn: 'span 3' } }, [h('span.sh-swatch', { style: { background: `rgb(${rgb.join(',')})` } }), ` ${sh.color.map((c) => c.toFixed(3)).join(', ')}`]),
-        ]),
-      ]),
-    ], 'sh-card'),
-  ]);
 
-  const panels = [srcPanel, fePanel, irPanel, isaPanel];
-  const body = h('div.sh-body', {}, panels);
-  host.append(h('div.sh-data', {}, [strip.el, body]));
-  let shown = -1;
+  const nArrow = ms.arrow(p, nObj, 0.5, COLORS.magenta, 'N');
+  const lArrow = ms.arrow(p, LIGHT_DIR, 0.55, COLORS.amber, 'L');
+  const hArrow = ms.arrow(p, HALF, 0.5, COLORS.cyan, 'H');
+  const setArrow = (g: Group, dirWorld: Vector3, len: number) => {
+    const d = toModel(ms, dirWorld);
+    (g.children[0] as ArrowHelper).setDirection(d);
+    g.children[1]?.position.set(p[0] + d.x * len * 1.15, p[1] + d.y * len * 1.15, p[2] + d.z * len * 1.15);
+  };
+  ms.markVertices([vi], COLORS.cyan);
+  const stream = codeStream(ms);
+
+  // ---- Panels: compile chain at the bottom, one panel per step on the right.
+  ms.panel(t(L('Kompileringskedjan', 'The compile chain')), [strip.el], { side: 'bottom', className: 'sh-chainpanel' });
+  // 1-based lines of the fragment shader that belong to each term.
+  const lit = sp.lang === 'hlsl' ? { base: [2, 12], diff: [6, 7, 11], spec: [8, 9, 10] } : { base: [5, 14], diff: [8, 9, 13], spec: [10, 11, 12] };
+  const fsCode = codeEl(sp.fs, sp.lang);
+  const fsLines = Array.from(fsCode.children) as HTMLElement[];
+  const markLines = (ls: number[]) => fsLines.forEach((el, i) => el.classList.toggle('on', ls.includes(i + 1)));
+  const live = { nl: h('div.v.glow-amber', { text: '—' }), nh: h('div.v.glow-cyan', { text: '—' }), spec: h('div.v.glow-magenta', { text: '—' }) };
+  const liveStat = (el: HTMLElement, k: string) => h('div.stat', {}, [el, h('div.k', { text: k })]);
+
+  const p0 = ms.panel(`${sp.fsName} · ${lineCount(sp.fs)} ${t(L('rader', 'lines'))}`, [
+    h('div.stat-row', {}, [stat(`${byteCount(sp.vs)} B`, sp.vsName, 'glow-cyan'), stat(`${byteCount(sp.fs)} B`, sp.fsName, 'glow-magenta')]),
+    h('div.v-scroll.sh-scroll', {}, [fsCode]),
+    h('p.hint', {
+      html: t(L(
+        'Vertexshadern placerar modellen (<code>mvp × position</code>). Här skriver fragmentshadern bara <code>BASE</code> – ingen belysning ännu.',
+        'The vertex shader places the model (<code>mvp × position</code>). Here the fragment shader only writes <code>BASE</code> – no lighting yet.',
+      )),
+    }),
+  ], { className: 'sh-p' });
+
+  const cmd: Record<ApiId, string[]> = {
+    opengl: ['glShaderSource(fs, 1, &src, nullptr);', 'glCompileShader(fs);   // in the driver', 'glGetShaderiv(fs, GL_COMPILE_STATUS, &ok);'],
+    vulkan: ['$ glslc --target-env=vulkan1.3 -O shade.frag -o shade.frag.spv', '# or: dxc -spirv -T ps_6_6 shade_ps.hlsl'],
+    d3d12: ['$ dxc -T ps_6_6 -E main shade_ps.hlsl -Fo shade_ps.cso', '# runtime: IDxcCompiler3::Compile()'],
+  };
+  const phases = [
+    [L('Parsning → AST', 'Parse → AST'), 'max(dot(n, LIGHT_DIR), 0.0)'],
+    [L('Typkontroll', 'Type check'), 'dot(vec3, vec3) → float'],
+    [L('Gränssnitt VS ↔ FS', 'Interface VS ↔ FS'), sp.lang === 'glsl' ? 'location 0: vNormal' : 'semantic NORMAL'],
+    [L('Konstantvikning', 'Constant folding'), `LIGHT_DIR = (${LIGHT_DIR.map((x) => x.toFixed(3)).join(', ')})`],
+  ] as const;
+  const p1 = ms.panel(t(L('Front end – och diffus belysning', 'Front end – and diffuse light')), [
+    h('div.stat-row', {}, [liveStat(live.nl, 'diff = max(N·L, 0)'), stat(f4(sh.diffuse), t(L('med appens LIGHT_DIR', 'with the app’s LIGHT_DIR')), 'glow-amber')]),
+    h('pre.sh-term', {}, cmd[api].map((l) => h('div', { text: l, attrs: { class: l.startsWith('$') ? 'cmd' : 'cmt' } }))),
+    h('ol.sh-phases.one', {}, phases.map(([a, b]) => h('li.sh-phase', {}, [h('span.sh-tick', { text: '✓' }), h('b', { text: t(a) }), h('code', { text: b })]))),
+    h('p.hint', {
+      html: t(L(
+        'Raden <code>diff = max(dot(n, LIGHT_DIR), 0)</code> slås på: ljuset (solen) kretsar runt modellen och <b>N·L</b> i den följda punkten räknas live.',
+        'The line <code>diff = max(dot(n, LIGHT_DIR), 0)</code> is switched on: the light (the sun) orbits the model and <b>N·L</b> at the followed point is computed live.',
+      )),
+    }),
+  ], { className: 'sh-p' });
+
+  const irTitle = api === 'd3d12' ? 'shade_ps.cso – DXIL' : api === 'vulkan' ? 'shade.frag.spv – SPIR-V' : 'SPIR-V (GL_ARB_gl_spirv)';
+  const irCode = api === 'd3d12' ? codeEl(dxilExcerpt(), 'llvm') : asmEl(spirvExcerpt(api));
+  const p2 = ms.panel(`${irTitle} · ${t(L('utdrag', 'excerpt'))}`, [
+    h('div.stat-row', {}, [liveStat(live.nh, 'N·H'), liveStat(live.spec, `spec = (N·H)^${SHININESS}`)]),
+    h('div.v-scroll.sh-scroll.sh-ir', {}, [irCode]),
+    h('p.hint', {
+      html: t(api === 'opengl'
+        ? L('I OpenGL är IR:en normalt dold i drivrutinen; med GL 4.6 kan du ge den SPIR-V. Spekulärtermen slås på – <b>H</b> ligger mitt emellan ljus och kamera.', 'In OpenGL the IR is normally hidden in the driver; GL 4.6 can take SPIR-V. The specular term is switched on – <b>H</b> sits halfway between light and camera.')
+        : L(`IR: binärt, leverantörsneutralt${api === 'vulkan' ? ', magic 0x07230203' : ', signerat av validatorn'}. Spekulärtermen slås på – <b>H</b> ligger mitt emellan ljus och kamera.`, `IR: binary, vendor neutral${api === 'vulkan' ? ', magic 0x07230203' : ', signed by the validator'}. The specular term is switched on – <b>H</b> sits halfway between light and camera.`)),
+    }),
+  ], { className: 'sh-p' });
+
+  const when: Record<ApiId, L> = {
+    opengl: L('Vid glLinkProgram (ofta uppskjutet till första draw). glGetProgramBinary kan cacha.', 'At glLinkProgram (often deferred to the first draw). glGetProgramBinary can cache it.'),
+    vulkan: L('I vkCreateGraphicsPipelines; VkPipelineCache sparar den.', 'In vkCreateGraphicsPipelines; a VkPipelineCache keeps it.'),
+    d3d12: L('I CreateGraphicsPipelineState; ID3D12PipelineLibrary sparar den.', 'In CreateGraphicsPipelineState; an ID3D12PipelineLibrary keeps it.'),
+  };
+  const p3 = ms.panel(t(L('GPU ISA – illustrativt (RDNA-likt)', 'GPU ISA – illustrative (RDNA-like)')), [
+    h('div.stat-row', {}, [stat(f4(sh.diffuse), 'diff', 'glow-amber'), stat(f4(sh.specular), 'spec', 'glow-magenta'), h('div.stat', {}, [h('div.v', {}, [h('span.sh-swatch', { style: { background: `rgb(${rgb.join(',')})` } }), ` ${rgb.join(',')}`]), h('div.k', { text: 'outColor' })])]),
+    h('div.v-scroll.sh-scroll.sh-isa', {}, [asmEl(isaExcerpt())]),
+    h('p.hint', {
+      html: t(L(
+        `Ljuset låses på appens <code>LIGHT_DIR</code> – i maskinkoden är den bara tre float-literaler. ${when[api].sv} Värdena ovan: samma shader på CPU:n för vertex ${vi}.`,
+        `The light locks onto the app’s <code>LIGHT_DIR</code> – in machine code it is just three float literals. ${when[api].en} Values above: the same shader on the CPU for vertex ${vi}.`,
+      )),
+    }),
+  ], { className: 'sh-p' });
+  const panels = [p0, p1, p2, p3];
+
+  steadySun(ms);
+
+  // Live N·L / N·H at the followed point, plus arrows that follow the light.
+  const L3 = new Vector3();
+  const H3 = new Vector3();
+  let frame = 0;
+  let step = 0;
+  ms.onFrame(() => {
+    L3.copy(ms.material.uniforms.uLightDir.value).normalize();
+    H3.copy(L3).add(new Vector3(0, 0, 1)).normalize();
+    setArrow(lArrow, L3, 0.55);
+    setArrow(hArrow, H3, 0.5);
+    if (frame++ % 6) return;
+    const nl = Math.max(nWorld.dot(L3), 0);
+    const nh = Math.max(nWorld.dot(H3), 0);
+    live.nl.textContent = nl.toFixed(3);
+    live.nh.textContent = nh.toFixed(3);
+    live.spec.textContent = (nl > 0 ? Math.pow(nh, SHININESS) * (step >= 2 ? 1 : 0) : 0).toFixed(3);
+  });
+
+  const frags: string[][] = [
+    [],
+    ['dot(n, LIGHT_DIR)', 'max(diff, 0.0)', 'normalize(vNormal)', 'BASE * (0.12 + diff)'],
+    api === 'd3d12' ? ['dx.op.dot3', 'dx.op.unary Log', 'fmul fast', 'dx.op.unary Exp', 'select i1'] : ['OpDot', 'OpExtInst Pow', 'OpExtInst FMax', 'OpSelect', 'OpFOrdGreaterThan'],
+    ['v_fmac_f32', 'v_log_f32', 'v_exp_f32', 'v_cndmask_b32', hexOf('v_fmac'), hexOf('v_exp'), 'v_rsq_f32', 'exp mrt0'],
+  ];
+  const fragColor = [CSS.cyan, CSS.cyan, API_CSS[api], CSS.magenta];
+  /** Fragments leave from the code panel's edge. */
+  const fromPanel: Where = () => new Vector3(1.2 + Math.random() * 0.2, -0.55 + Math.random() * 1.3, 0.35);
 
   return {
-    show(step, animate) {
-      strip.set(step, animate);
-      panels.forEach((p, i) => p.classList.toggle('on', i === step));
-      const p = panels[step];
-      if (animate && shown !== step) {
-        gsap.fromTo(p, { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: dur(0.45), ease: 'power2.out' });
-        const lines = p.querySelectorAll('.sh-line');
-        if (lines.length) gsap.fromTo(lines, { opacity: 0, x: -8 }, { opacity: 1, x: 0, stagger: 0.012, duration: dur(0.25) });
-        if (step === 1) gsap.fromTo(phaseEls, { opacity: 0.15 }, { opacity: 1, stagger: 0.16, duration: dur(0.3), delay: 0.2 });
+    show(s, animate) {
+      step = s;
+      strip.set(s, animate);
+      panels.forEach((el, i) => (el.style.display = i === s ? '' : 'none'));
+      if (animate) gsap.fromTo(panels[s], { opacity: 0, x: 14 }, { opacity: 1, x: 0, duration: dur(0.4) });
+      markLines(s === 0 ? lit.base : s === 1 ? [...lit.base, ...lit.diff] : [...lit.base, ...lit.diff, ...lit.spec]);
+      stream.clear();
+      if (s > 0) stream.start(frags[s], fragColor[s], animate ? 0.55 : 0.8, fromPanel);
+
+      // The shader on the model, term by term.
+      ms.uniform('uDiffuseW', s >= 1 ? 1 : 0, 0);
+      ms.uniform('uSpecW', s >= 2 ? 1 : 0, s === 2 ? secs(animate, 1.6) : 0);
+      if (s === 0) {
+        ms.setMode('unlit', 1, 0);
+        if (animate) ms.sweep('unlit', 'ghost', 1.4);
+      } else if (s === 1) {
+        ms.setMode('shaded', 0, 0);
+        if (animate) ms.sweep('shaded', 'unlit', 1.6);
       } else {
-        gsap.set(p, { opacity: 1, y: 0 });
-        const lines = p.querySelectorAll('.sh-line');
-        if (lines.length) gsap.set(lines, { opacity: 1, x: 0 });
-        if (step === 1) gsap.set(phaseEls, { opacity: 1 });
+        ms.setMode('shaded', 0, 0);
       }
-      shown = step;
+      nArrow.visible = true;
+      lArrow.visible = s >= 1;
+      hArrow.visible = s >= 2;
+      // With reduced motion the light stays at the app's LIGHT_DIR instead of orbiting.
+      const orbit = (s === 1 || s === 2) && !reducedMotion();
+      ms.lightOrbit(orbit);
+      if (!orbit && s !== 3) ms.material.uniforms.uLightDir.value.set(...LIGHT_DIR);
+      if (s === 3) {
+        const u = ms.material.uniforms.uLightDir.value;
+        if (animate) {
+          const target = new Vector3(...LIGHT_DIR);
+          ms.tween(u, { x: target.x, y: target.y, z: target.z, duration: dur(1.0), ease: 'power2.inOut', onUpdate: () => u.normalize() });
+          ms.sweep('shaded', 'shaded', 1.5);
+          ms.material.uniforms.uSweepColor.value.set(COLORS.magenta);
+        } else u.set(...LIGHT_DIR);
+      }
     },
     destroy() {
+      stream.clear();
       gsap.killTweensOf(panels);
-      gsap.killTweensOf(phaseEls);
+      ms.destroy();
     },
   };
 }
 
 /* ------------------------------------------------------------------ */
-/* Concept: source text flowing through a compiler chain               */
+/* Concept: the shader text is compiled into the model                  */
 /* ------------------------------------------------------------------ */
 interface Tok {
   src: string;
@@ -522,195 +626,94 @@ function tokens(api: ApiId): Tok[] {
 function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
   const { t } = ctx;
   const api = ctx.state.api;
-  const nodes = chain(api, t);
   const toks = tokens(api);
-  const kinds = ['src', 'ast', 'ir', 'be', 'isa'] as const;
+  const strip = chainStrip(api, t);
+  const ms = createModelStage(host, ctx, { autoRotate: 0.25, bloom: 0.6, bloomThreshold: 0.85, layers: { solid: 1, wire: 0 } });
+  ms.overlay.classList.add('sh-ms', 'sh-concept');
+  steadySun(ms);
+  const stream = codeStream(ms);
 
-  const stage = h('div.v-fill.shc-stage');
-  const caption = h('div.pack-caption.shc-caption');
-  host.append(stage, caption);
-
-  const stations = nodes.map((n, i) =>
-    h(`div.shc-station.k-${kinds[i]}`, {}, [h('div.shc-st-t', { text: breakable(n.title) }), h('div.shc-st-s', { text: n.sub })]),
+  // A ring of tokens around the model: the shader as text, then as AST, then as IR.
+  const ring = new Group();
+  ms.scene.add(ring);
+  const textures: Texture[] = [];
+  const kindColor = [CSS.cyan, CSS.violet, API_CSS[api]];
+  const ringSprites = [0, 1, 2].map((k) =>
+    toks.map((tk) => {
+      const spr = textSprite(k === 0 ? tk.src : k === 1 ? tk.ast : tk.ir, kindColor[k], 0.1);
+      if (spr.material.map) textures.push(spr.material.map);
+      spr.visible = false;
+      ring.add(spr);
+      return spr;
+    }),
   );
-  const track = h('div.shc-track');
-  stage.append(track, ...stations);
-  const brackets = h('div.shc-brackets');
-  stage.append(brackets);
-  const buildCount = nodes.filter((n) => n.build).length;
-  const bBuild = h('div.shc-bracket.build', { text: t(L('byggtid', 'build time')) });
-  const bRun = h('div.shc-bracket.run', { text: t(L('körtid · drivrutin', 'run time · driver')) });
-  if (buildCount) brackets.append(bBuild);
-  brackets.append(bRun);
-
-  // IR "file" badge and the machine-code grid.
-  const file = h('div.shc-file', {}, [h('span', { text: api === 'd3d12' ? '.cso' : api === 'vulkan' ? '.spv' : 'IR' }), h('small', { text: api === 'opengl' ? t(L('dold i drivern', 'inside driver')) : t(L('portabel', 'portable')) })]);
-  stage.append(file);
-  const GRID = 8;
-  const gridCells = Array.from({ length: GRID }, (_, i) => h('span.shc-cell', { text: (((i + 1) * 2654435761) >>> 0).toString(16).padStart(8, '0').slice(0, 4) }));
-  const grid = h('div.shc-grid', {}, gridCells);
-  stage.append(grid);
-  const vendors = h('div.shc-vendors', {}, ['AMD', 'NVIDIA', 'Intel', 'Qualcomm'].map((v) => h('span', { text: v })));
-  stage.append(vendors);
-
-  let geo = { W: 0, H: 0, sx: [] as number[], sw: 0, y: 0, top: 0, sh: 0 };
+  const fileName = api === 'd3d12' ? 'shade_ps.cso' : api === 'vulkan' ? 'shade.frag.spv' : t(L('drivrutinens IR', 'driver IR'));
+  const filePos = new Vector3(1.45, -0.32, 0.2);
+  const file = ms.box(fileName, [filePos.x, filePos.y, filePos.z], [0.62, 0.46, 0.14], API_HEX3[api]);
   let step = 0;
-  let gridFill = 0;
-  const live = new Map<HTMLElement, gsap.core.Timeline | null>();
-  let spawnCall: gsap.core.Tween | null = null;
-  let spawnIdx = 0;
-  const motion = !reducedMotion();
-
-  const layout = () => {
-    const W = stage.clientWidth;
-    const H = stage.clientHeight;
-    if (!W || !H) return;
-    const gap = Math.max(14, W * 0.025);
-    const sw = (W - 32 - gap * 4) / 5;
-    const sh = Math.max(120, Math.min(210, H - Math.max(12, H * 0.08) - 112));
-    const top = Math.max(12, H * 0.08);
-    const sx = stations.map((_, i) => 16 + i * (sw + gap));
-    geo = { W, H, sx, sw, y: top + sh * 0.46, top, sh };
-    stations.forEach((s, i) => gsap.set(s, { x: sx[i], y: top, width: sw, height: sh }));
-    gsap.set(track, { x: sx[0] + sw / 2, y: geo.y, width: sx[4] - sx[0] });
-    const by = top + sh + 8;
-    const bw = sx[buildCount - 1] + sw - sx[0];
-    if (buildCount) gsap.set(bBuild, { x: sx[0], y: by, width: bw });
-    gsap.set(bRun, { x: sx[buildCount], y: by, width: sx[4] + sw - sx[buildCount] });
-    gsap.set(file, { x: sx[2] + sw / 2 - 34, y: top + sh - 56 });
-    gsap.set(grid, { x: sx[4] + 8, y: top + sh * 0.72, width: sw - 16 });
-    gsap.set(vendors, { x: sx[3] + 6, y: top + sh * 0.73, width: sw - 12 });
-  };
-
-  const maxStation = () => [0, 2, 2, 4][step];
-
-  const label = (tk: Tok, k: number) => (k === 0 ? tk.src : k === 1 ? tk.ast : k === 2 ? tk.ir : tk.be);
-
-  const spawn = (): gsap.core.Timeline | null => {
-    if (!geo.W) return null;
-    const tk = toks[spawnIdx % toks.length];
-    const laneY = geo.y - 13 + ((spawnIdx % 3) - 1) * 30;
-    spawnIdx++;
-    const el = h('div.shc-tok.k-src', { text: tk.src });
-    stage.append(el);
-    const last = maxStation();
-    const cx = (k: number) => geo.sx[k] + geo.sw / 2;
-    const tl = gsap.timeline({
-      onComplete: () => {
-        live.delete(el);
-        el.remove();
-      },
+  let radius = 1.5;
+  ms.onFrame((time) => {
+    ring.rotation.y = time * 0.25;
+    const set = ringSprites[Math.min(step, 2)];
+    set.forEach((spr, i) => {
+      const a = (i / set.length) * Math.PI * 2;
+      spr.position.set(Math.cos(a) * radius, Math.sin(a * 2 + time * 0.8) * 0.22 + 0.2, Math.sin(a) * radius * 0.55);
     });
-    live.set(el, tl);
-    tl.set(el, { x: geo.sx[0] - 30, y: laneY, opacity: 0, xPercent: -50 });
-    tl.to(el, { x: cx(0), opacity: 1, duration: dur(0.6), ease: 'power2.out' });
-    if (last === 0) {
-      tl.to(el, { y: laneY + 12, duration: dur(1.4), ease: 'sine.inOut' });
-    }
-    for (let k = 1; k <= last; k++) {
-      tl.to(el, { x: cx(k), duration: dur(0.75), ease: 'power1.inOut' });
-      tl.add(() => {
-        el.className = `shc-tok k-${kinds[k]}`;
-        el.textContent = k === 4 ? hexOf(tk.be) : label(tk, k);
-        if (k === 4) {
-          const c = gridCells[gridFill++ % GRID];
-          c.classList.remove('hot');
-          void c.offsetWidth;
-          c.classList.add('on', 'hot');
-        }
-      });
-      tl.to(el, { scale: 1.12, duration: dur(0.12), yoyo: true, repeat: 1 });
-      if (k === 2 && last === 2) tl.to(el, { y: geo.top + geo.sh - 40, scale: 0.5, duration: dur(0.5), ease: 'power2.in' });
-    }
-    if (last === 4) tl.to(el, { y: geo.top + geo.sh * 0.74, scale: 0.4, duration: dur(0.4), ease: 'power2.in' });
-    tl.to(el, { opacity: 0, duration: dur(0.3) });
-    return tl;
-  };
-
-  const loop = () => {
-    spawn();
-    spawnCall = gsap.delayedCall(interval(), loop);
-  };
-  const interval = () => (step === 0 ? 0.9 : 0.6);
-  /** Fill the chain with tokens already in flight, so a step never starts empty. */
-  const prewarm = () => {
-    const n = step === 0 ? 2 : 8;
-    for (let k = n; k >= 1; k--) spawn()?.time(k * interval(), false);
-  };
-
-  const clearTokens = () => {
-    live.forEach((tl, el) => {
-      tl?.kill();
-      el.remove();
-    });
-    live.clear();
-  };
+  });
 
   const captions = [
-    L('Shadern börjar som vanlig text – här appens Blinn–Phong-fragmentshader.', 'The shader starts out as plain text – here the app’s Blinn–Phong fragment shader.'),
-    L('Front end: text → syntaxträd → typkontroll → IR. Uttrycken blir enkla operationer i SSA-form.', 'Front end: text → syntax tree → type check → IR. Expressions become simple operations in SSA form.'),
+    L('Shadern börjar som vanlig text. Utan kompilerad kod kan GPU:n inte rita modellen – här bara ett spöke.', 'The shader starts out as plain text. Without compiled code the GPU cannot draw the model – just a ghost here.'),
+    L('Front end: text → syntaxträd → typkontroll. Uttrycken blir noder med typer (lila).', 'Front end: text → syntax tree → type check. Expressions become typed nodes (violet).'),
     api === 'opengl'
       ? L('I OpenGL är IR:en drivrutinens egen och syns aldrig – med GL_ARB_gl_spirv kan du ge den SPIR-V istället.', 'In OpenGL the IR belongs to the driver and is never visible – with GL_ARB_gl_spirv you can hand it SPIR-V instead.')
-      : L('IR:en sparas som en fil och skeppas med spelet. Samma fil fungerar på alla GPU-tillverkare.', 'The IR is saved as a file and shipped with the game. The same file works on every GPU vendor.'),
-    L('Drivrutinens back end översätter IR till just din GPU:s instruktioner: register, scheduling, maskinkod.', 'The driver’s back end translates IR into your exact GPU’s instructions: registers, scheduling, machine code.'),
+      : L('IR:en packas i en fil som skeppas med spelet. Samma fil fungerar på alla GPU-tillverkare.', 'The IR is packed into a file that ships with the game. The same file works on every GPU vendor.'),
+    L('Drivrutinens back end gör maskinkod för just din GPU – den strömmar in i modellen, som nu ritas på riktigt.', 'The driver’s back end makes machine code for your exact GPU – it streams into the model, which is now really drawn.'),
   ];
-
-  const apply = (animate: boolean) => {
-    const upto = LIT_UPTO[step];
-    stations.forEach((s, i) => {
-      s.classList.toggle('lit', i <= upto);
-      s.classList.toggle('cur', i === upto || (step === 3 && i === 3));
-    });
-    track.style.setProperty('--fill', String(upto / 4));
-    const fileOn = step >= 2;
-    const vendOn = step >= 3;
-    if (animate) {
-      gsap.to(file, { opacity: fileOn ? 1 : 0, scale: fileOn ? 1 : 0.6, duration: dur(0.4), ease: 'back.out(2)' });
-      gsap.to(grid, { opacity: vendOn ? 1 : 0, duration: dur(0.4) });
-      gsap.to(vendors, { opacity: vendOn ? 1 : 0, duration: dur(0.4), delay: 0.1 });
-    } else {
-      gsap.set(file, { opacity: fileOn ? 1 : 0, scale: 1 });
-      gsap.set(grid, { opacity: vendOn ? 1 : 0 });
-      gsap.set(vendors, { opacity: vendOn ? 1 : 0 });
-    }
-    if (!motion || !animate) gridCells.forEach((c, i) => c.classList.toggle('on', vendOn && i < GRID * 0.6));
-    caption.innerHTML = t(captions[step]);
-  };
-
-  const ro = new ResizeObserver(() => layout());
-  ro.observe(stage);
-  layout();
+  const caption = h('p.sh-caption');
+  ms.panel(t(L('Vad händer', 'What happens')), [caption], { side: 'bottom', className: 'sh-cap' });
+  ms.panel(t(L('Kedjan', 'The chain')), [strip.el], { side: 'bottom', className: 'sh-chainpanel' });
 
   return {
     show(s, animate) {
       step = s;
-      clearTokens();
-      spawnCall?.kill();
-      layout();
-      apply(animate);
-      if (motion) {
-        prewarm();
-        loop();
-      }
-      else {
-        // Static picture for reduced motion: one token parked at each lit station.
-        const upto = maxStation();
-        for (let k = 0; k <= upto; k++) {
-          const el = h(`div.shc-tok.k-${kinds[k]}`, { text: k === 4 ? hexOf(toks[k].be) : label(toks[k], k) });
-          stage.append(el);
-          live.set(el, null);
-          gsap.set(el, { x: geo.sx[k] + geo.sw / 2, y: geo.y - 13, xPercent: -50 });
+      strip.set(s, animate);
+      caption.innerHTML = t(captions[s]);
+      ringSprites.forEach((set, k) => set.forEach((spr) => (spr.visible = s < 3 && k === Math.min(s, 2))));
+      if (animate && s < 3) {
+        const o = { r: 1.9 };
+        radius = o.r;
+        ms.tween(o, { r: s === 2 ? 1.25 : 1.5, duration: dur(1.2), ease: 'power2.out', onUpdate: () => (radius = o.r) });
+      } else radius = s === 2 ? 1.25 : 1.5;
+      file.visible = s >= 2;
+      stream.clear();
+      const atFile: Where = () => filePos.clone().add(new Vector3((Math.random() - 0.5) * 0.3, (Math.random() - 0.5) * 0.2, 0));
+      const onRing: Where = () => {
+        const a = Math.random() * Math.PI * 2;
+        return new Vector3(Math.cos(a) * radius, 0.2, Math.sin(a) * radius * 0.55).applyAxisAngle(new Vector3(0, 1, 0), ring.rotation.y);
+      };
+      if (s === 3) stream.start(toks.map((tk) => hexOf(tk.be)), CSS.magenta, 0.4, atFile);
+      else if (s === 2) stream.start(toks.map((tk) => tk.ir), API_CSS[api], 0.7, onRing, atFile);
+      ms.lightOrbit(s === 3);
+      if (s < 3) {
+        ms.setMode('ghost', 1, secs(animate, 0.5));
+        ms.setLayer('wire', 0.18, secs(animate, 0.5));
+      } else {
+        ms.setLayer('wire', 0, secs(animate, 0.8));
+        ms.setMode('shaded', 0, 0);
+        if (animate) {
+          ms.sweep('shaded', 'ghost', 1.8);
+          ms.material.uniforms.uSweepColor.value.set(COLORS.magenta);
         }
       }
     },
     destroy() {
-      spawnCall?.kill();
-      clearTokens();
-      ro.disconnect();
-      gsap.killTweensOf([file, grid, vendors, ...stations]);
+      stream.clear();
+      textures.forEach((x) => x.dispose());
+      ms.destroy();
     },
   };
 }
+const API_HEX3: Record<ApiId, number> = { opengl: 0x5aa9e6, vulkan: 0xff4d64, d3d12: 0x6cd04a };
 
 /* ------------------------------------------------------------------ */
 /* API panels                                                          */

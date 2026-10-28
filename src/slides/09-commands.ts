@@ -1,9 +1,13 @@
 import gsap from 'gsap';
+import { AdditiveBlending, LineBasicMaterial, LineSegments, Mesh, MeshBasicMaterial, Sprite, SpriteMaterial, Vector3 } from 'three';
+import type { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
+import { SHOWCASE_ROT_Y } from '../core/derived';
 import { dur, h, reducedMotion } from '../core/dom';
 import { L, type Text } from '../core/i18n';
 import type { ApiId } from '../core/state';
-import { formatBytes } from '../pipeline/layout';
-import { card, stat } from '../views/widgets';
+import { createModelStage, glowTexture } from '../views/ModelStage';
+import { COLORS, label } from '../views/three-helpers';
+import { stat } from '../views/widgets';
 import '../styles/slides/commands.css';
 import { standardSlide } from './standard';
 import type { ApiPanelSpec, SlideContext, Visual } from './types';
@@ -336,52 +340,276 @@ function liveCanvas(host: HTMLElement, draw: (g: CanvasRenderingContext2D, w: nu
 }
 
 /* ------------------------------------------------------------------ */
-/* Real data: this frame's command stream                              */
+/* The 3D scene: commands recorded, submitted and executed on the model */
+/* ------------------------------------------------------------------ */
+const KIND_HEX: Record<Kind, number> = { sync: 0xffb547, rec: 0x38e1ff, barrier: 0xff8a5c, pass: 0x9b7bff, state: 0x8fb4ff, bind: 0x5cf08f, draw: 0xff3fd2, submit: 0xffffff };
+const API_NUM: Record<ApiId, number> = { opengl: 0x5aa9e6, vulkan: 0xff4d64, d3d12: 0x6cd04a };
+/** Commands that end up inside the command buffer (CPU waits and queue operations don't). */
+const RECORDED: Kind[] = ['rec', 'barrier', 'pass', 'state', 'bind', 'draw'];
+
+interface CmdHooks {
+  /** Command i is being executed (step 0) or recorded (steps 1–2); −1 = none. */
+  row?: (i: number) => void;
+  /** Called every frame with the number of triangles drawn so far. */
+  drawn?: (n: number) => void;
+  /** Step 3: frame k was just presented. */
+  presented?: (k: number) => void;
+}
+
+function cmdScene(host: HTMLElement, ctx: SlideContext, concept: boolean, cmds: Cmd[], hooks: CmdHooks) {
+  const { t } = ctx;
+  const api = ctx.state.api;
+  const mesh = ctx.state.mesh;
+  const N = mesh.triangleCount;
+  const motion = !reducedMotion();
+  const ms = createModelStage(host, ctx, { shift: concept ? 0 : -0.15, autoRotate: 0, bloom: 0.55, bloomThreshold: 0.85 });
+  ms.overlay.classList.add('cmd-ms');
+
+  // CPU → command buffer → queue, in a row under the model (the model itself is the GPU's output).
+  const y = -1.0;
+  const z = 0.05;
+  const gl = api === 'opengl';
+  const bufName = (hidden: boolean) =>
+    hidden ? t(L('drivrutinens buffert (dold)', 'driver buffer (hidden)')) : concept ? t(L('kommandobuffert', 'command buffer')) : api === 'vulkan' ? 'VkCommandBuffer' : api === 'd3d12' ? 'ID3D12GraphicsCommandList' : 'VkCommandBuffer / CommandList';
+  const cpu = ms.box('CPU', [-1.08, y, z], [0.34, 0.22, 0.2], COLORS.cyan);
+  const buf = ms.box(bufName(false), [-0.32, y, z], [0.95, 0.26, 0.2], API_NUM[api]);
+  const queue = ms.box(api === 'd3d12' && !concept ? 'ID3D12CommandQueue' : api === 'vulkan' && !concept ? 'VkQueue' : t(L('kö', 'queue')), [0.6, y, z], [0.42, 0.22, 0.2], COLORS.violet);
+  const bufLabel = buf.children[2] as CSS2DObject;
+  const bufEdges = (buf.children[0] as LineSegments).material as LineBasicMaterial;
+  const bufFill = (buf.children[1] as Mesh).material as MeshBasicMaterial;
+  const boxes = [cpu, buf, queue];
+  const callout = label('', 'cmd-callout');
+  callout.position.set(-0.3, -1.32, 0.3);
+  ms.scene.add(callout);
+  const say = (s: string, kind?: Kind) => {
+    callout.element.textContent = s;
+    callout.element.className = `three-label cmd-callout${kind ? ' k-' + kind : ''}`;
+  };
+
+  // Packets: one glowing dot per recorded command.
+  const packets = cmds.map((c) => {
+    const sp = new Sprite(new SpriteMaterial({ map: glowTexture(), color: KIND_HEX[c.kind], blending: AdditiveBlending, depthWrite: false, depthTest: false, transparent: true, opacity: 0 }));
+    sp.scale.setScalar(c.kind === 'draw' ? 0.17 : 0.11);
+    sp.visible = false;
+    ms.scene.add(sp);
+    return sp;
+  });
+  const recIdx = cmds.map((c, i) => (RECORDED.includes(c.kind) ? i : -1)).filter((i) => i >= 0);
+  const slotOf = (j: number): Vector3 => {
+    const cols = Math.ceil(recIdx.length / 2);
+    return new Vector3(-0.32 - 0.42 + ((j % cols) + 0.5) * (0.84 / cols), y + (j < cols ? 0.05 : -0.05), z);
+  };
+  const cpuPos = new Vector3(-1.08, y, z);
+  const qPos = new Vector3(0.6, y, z);
+  const gpuPos = new Vector3(0, 0, 0);
+
+  let step = 0;
+  let presentedK = -1;
+  const t0 = performance.now();
+  // Same clock as the timeline canvas (which freezes at t = 9.3 with reduced motion).
+  const now = () => 2.6 + (motion ? (performance.now() - t0) / 1000 : 9.3) * 1.1;
+  ms.onFrame(() => {
+    const u = ms.material.uniforms.uDrawTris.value;
+    if (step !== 3) {
+      const n = Math.min(N, Math.ceil(u));
+      ms.highlightTriangle(n > 0 && n < N ? n - 1 : null, COLORS.cyan);
+      hooks.drawn?.(n);
+      return;
+    }
+    // Frames in flight: the model shows the last frame the GPU finished (fence signalled), one pose per frame.
+    const tn = now();
+    let k = presentedK < 0 ? 0 : presentedK;
+    while (k + 1 < SCHED.length && SCHED[k + 1].ge <= tn) k++;
+    if (k !== presentedK && SCHED[k].ge <= tn) {
+      presentedK = k;
+      ms.pivot.rotation.y = SHOWCASE_ROT_Y + (k % 64) * 0.098;
+      hooks.presented?.(k);
+      say(
+        concept
+          ? t(L(`F${k} visas · CPU: F${k + FIF}`, `F${k} shown · CPU: F${k + FIF}`))
+          : t(L(`GPU klar med F${k} → visas · CPU spelar in F${k + FIF}`, `GPU done with F${k} → shown · CPU records F${k + FIF}`)),
+        'submit',
+      );
+    }
+  });
+
+  let tl: gsap.core.Timeline | null = null;
+  let cur: gsap.core.Timeline | null = null;
+  let pending: gsap.core.Tween | null = null;
+  const stopLoop = () => {
+    tl?.kill();
+    pending?.kill();
+    tl = cur = pending = null;
+  };
+  const resetPackets = () =>
+    packets.forEach((p) => {
+      gsap.killTweensOf([p.position, p.material, p.scale]);
+      p.visible = false;
+      p.material.opacity = 0;
+    });
+  const drawAll = (s: number) => {
+    ms.setMode('shaded', 0, 0);
+    ms.drawTriangles(0, 0);
+    ms.drawTriangles(N, s);
+  };
+  const pulse = (m: MeshBasicMaterial, to = 0.35) => {
+    m.opacity = to;
+    ms.tween(m, { opacity: 0.08, duration: dur(0.6) });
+  };
+
+  /** Step 0: the GPU executes the list; the draw call draws the triangles in index order. */
+  const execute = (tl: gsap.core.Timeline) => {
+    let at = 0.4;
+    cmds.forEach((c, i) => {
+      tl.call(() => {
+        hooks.row?.(i);
+        say(`${c.call}(${c.args.length > 46 ? c.args.slice(0, 44) + '…' : c.args})`, c.kind);
+        if (c.kind === 'pass' && /clear|Clear|BeginRendering/.test(c.call + c.args)) {
+          ms.drawTriangles(0, 0);
+          ms.setMode('ghost', 1, 0);
+          ms.drawTriangles(N, 0);
+        }
+        if (c.kind === 'bind' && /Vertex|VertexArray|vao/.test(c.call + c.args)) {
+          ms.setLayer('points', 0.7, 0);
+          ms.setLayer('points', 0, 0.9);
+        }
+        if (c.kind === 'bind' && /Index/.test(c.call)) {
+          ms.setLayer('wire', 0.5, 0);
+          ms.setLayer('wire', 0, 0.9);
+        }
+        if (c.kind === 'draw') drawAll(2.8);
+      }, [], at);
+      at += c.kind === 'draw' ? 3.2 : 0.32;
+    });
+    tl.call(() => hooks.row?.(-1), [], at + 0.6);
+    return at + 1.6;
+  };
+
+  /** Steps 1–2 (and concept step 0): record into a buffer, submit, execute. */
+  const record = (tl: gsap.core.Timeline, hidden: boolean) => {
+    let at = 0.3;
+    tl.call(() => {
+      resetPackets();
+      ms.setMode('ghost', 1, 0);
+      ms.drawTriangles(N, 0);
+      bufEdges.opacity = hidden ? 0.35 : 0.95;
+    }, [], 0);
+    let j = 0;
+    cmds.forEach((c, i) => {
+      const p = packets[i];
+      const rec = RECORDED.includes(c.kind);
+      const slot = rec ? slotOf(j++) : null;
+      tl.call(() => {
+        hooks.row?.(i);
+        say(concept ? c.call + (c.args ? ` · ${c.args}` : '') : `${c.call}(…)`, c.kind);
+        if (c.kind === 'sync') pulse((cpu.children[1] as Mesh).material as MeshBasicMaterial, 0.5);
+        if (slot) {
+          p.visible = true;
+          p.position.copy(cpuPos);
+          p.material.opacity = 1;
+          ms.tween(p.position, { x: slot.x, y: slot.y, z: slot.z, duration: dur(0.35), ease: 'power2.out' });
+          if (hidden) ms.tween(p.material, { opacity: 0.18, duration: dur(0.3), delay: dur(0.35) });
+        }
+        if (c.kind === 'submit' && /Submit|Execute|SwapBuffers|^submit/.test(c.call)) {
+          // The whole buffer goes to the queue, then to the GPU.
+          pulse(bufFill, 0.4);
+          packets.forEach((q, k) => {
+            if (!q.visible) return;
+            q.material.opacity = 1;
+            ms.tween(q.position, { x: qPos.x + ((k % 5) - 2) * 0.06, y: qPos.y, z: qPos.z, duration: dur(0.4), ease: 'power2.in' });
+            ms.tween(q.position, { x: gpuPos.x, y: gpuPos.y, z: gpuPos.z, duration: dur(0.45), delay: dur(0.5), ease: 'power2.in' });
+            ms.tween(q.material, { opacity: 0, duration: dur(0.2), delay: dur(0.8) });
+          });
+          tl.pause();
+          pending = gsap.delayedCall(dur(0.9), () => {
+            if (tl !== cur) return;
+            drawAll(1.6);
+            pulse((queue.children[1] as Mesh).material as MeshBasicMaterial, 0.4);
+            tl.resume();
+          });
+        }
+      }, [], at);
+      at += c.kind === 'submit' ? 2.4 : 0.2;
+    });
+    tl.call(() => hooks.row?.(-1), [], at + 0.4);
+    return at + 1.4;
+  };
+  const startLoop = (build: (tl: gsap.core.Timeline) => number) => {
+    stopLoop();
+    if (!motion) return;
+    tl = gsap.timeline({ repeat: -1 });
+    cur = tl;
+    tl.set({}, {}, build(tl));
+  };
+
+  return {
+    ms,
+    show(s: number, _animate: boolean) {
+      step = s;
+      ms.overlay.dataset.step = String(s);
+      stopLoop();
+      resetPackets();
+      ms.setLayer('points', 0, 0);
+      ms.setLayer('wire', 0, 0);
+      ms.pivot.rotation.y = SHOWCASE_ROT_Y;
+      presentedK = -1;
+      const recSteps = concept ? s <= 2 : s === 1 || s === 2;
+      boxes.forEach((b) => (b.visible = recSteps));
+      const hidden = concept ? s === 1 : gl && s === 1;
+      bufLabel.element.textContent = bufName(hidden);
+      if (s === 3) {
+        ms.setMode('shaded', 0, 0);
+        ms.drawTriangles(N, 0);
+        ms.highlightTriangle(null);
+        if (concept) callout.position.set(-1.4, 0.15, 0);
+        else callout.position.set(-0.2, 1.0, 0);
+        return;
+      }
+      callout.position.set(-0.3, -1.32, 0.3);
+      ms.setMode('shaded', 0, 0);
+      ms.drawTriangles(N, 0);
+      if (!concept && s === 0) startLoop(execute);
+      else startLoop((tl) => record(tl, hidden));
+      if (!motion) {
+        hooks.row?.(-1);
+        say(concept ? '' : `${cmds.find((c) => c.kind === 'draw')!.call}(${cmds.find((c) => c.kind === 'draw')!.args})`, 'draw');
+      }
+    },
+    destroy() {
+      stopLoop();
+      resetPackets();
+      ms.destroy();
+    },
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* Real data: this frame's command stream, live on the model            */
 /* ------------------------------------------------------------------ */
 function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
   const { t } = ctx;
   const api = ctx.state.api;
   const cmds = commandStream(ctx, api);
-  const lay = ctx.derived.layout;
   const mesh = ctx.state.mesh;
   const idx = mesh.indices.length;
   const count = (k: Kind[]) => cmds.filter((c) => k.includes(c.kind)).length;
 
   const rows = cmds.map((c, i) =>
-    h(`div.cmd-row.k-${c.kind}`, {}, [
-      h('span.cmd-i', { text: String(i + 1).padStart(2, '0') }),
-      h('span.cmd-call', { text: c.call }),
-      h('span.cmd-args', { text: c.args ? `(${c.args})` : '()' }),
-      c.note ? h('span.cmd-note', { text: c.note }) : null,
-    ]),
+    h(`div.cmd-row.k-${c.kind}`, {}, [h('span.cmd-i', { text: String(i + 1).padStart(2, '0') }), h('span.cmd-call', { text: c.call }), h('span.cmd-args', { text: c.args ? `(${c.args})` : '()' })]),
   );
-  const listCard = card(
-    api === 'opengl' ? t(L('Dina GL-anrop för en frame', 'Your GL calls for one frame')) : api === 'vulkan' ? t(L('Inspelat i VkCommandBuffer + submit', 'Recorded into a VkCommandBuffer + submit')) : t(L('Inspelat i ID3D12GraphicsCommandList + submit', 'Recorded into an ID3D12GraphicsCommandList + submit')),
-    [h('div.v-scroll.cmd-list', {}, rows)],
-    'cmd-listcard',
-  );
+  const list = h('div.v-scroll.cmd-list', {}, rows);
+  const drawnEl = h('div.v.glow-magenta', { text: '0' });
+  const legend = () => h('div.cmd-legend', {}, (['sync', 'rec', 'barrier', 'pass', 'state', 'bind', 'draw', 'submit'] as Kind[]).filter((k) => count([k])).map((k) => h(`span.k-${k}`, { text: `${k} ${count([k])}` })));
 
-  // Right side, one card per step.
-  const legend = h('div.cmd-legend', {}, (['sync', 'rec', 'barrier', 'pass', 'state', 'bind', 'draw', 'submit'] as Kind[]).filter((k) => count([k])).map((k) => h(`span.k-${k}`, { text: `${k} ${count([k])}` })));
-  const s0 = h('div.cmd-side', {}, [
+  const listTitle = api === 'opengl' ? t(L('Dina GL-anrop för en frame', 'Your GL calls for one frame')) : api === 'vulkan' ? t(L('VkCommandBuffer + submit', 'VkCommandBuffer + submit')) : t(L('Command list + submit', 'Command list + submit'));
+  const p0 = h('div', {}, [
     h('div.stat-row', {}, [
       stat(String(cmds.length), t(L('anrop / frame', 'calls / frame')), 'glow-cyan'),
-      stat('1', t(L('draw-anrop', 'draw call')), 'glow-magenta'),
+      stat(idx.toLocaleString('en-US'), 'indexCount', 'glow-amber'),
+      h('div.stat', {}, [drawnEl, h('div.k', { text: t(L(`av ${mesh.triangleCount.toLocaleString('en-US')} trianglar ritade`, `of ${mesh.triangleCount.toLocaleString('en-US')} triangles drawn`)) })]),
     ]),
-    h('div.stat-row', {}, [
-      stat(idx.toLocaleString('en-US'), `indexCount · ${mesh.triangleCount.toLocaleString('en-US')} ${t(L('trianglar', 'triangles'))}`, 'glow-amber'),
-    ]),
-    h('dl.kv.cmd-kv', {}, [
-      h('dt', { text: 'vertex buffer' }),
-      h('dd', { text: `${formatBytes(lay.vertexBytes)} · stride ${lay.stride}` }),
-      h('dt', { text: 'index buffer' }),
-      h('dd', { text: `${formatBytes(lay.indexBytes)} · ${lay.indexType}` }),
-      h('dt', { text: 'viewport' }),
-      h('dd', { text: `${VW} × ${VH}` }),
-      h('dt', { text: 'clear' }),
-      h('dd', { text: `(${CLEAR})` }),
-    ]),
-    legend,
+    list,
+    legend(),
   ]);
 
   const hiddenGl = [
@@ -389,54 +617,69 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
     t(L('kodar GPU-paket i en intern kommandobuffert', 'encodes GPU packets into an internal command buffer')),
     t(L('lägger in barriärer / layoutbyten själv', 'inserts barriers / layout changes itself')),
     t(L('väntar eller byter buffert om du skriver i en buffert GPU:n läser', 'stalls or renames if you write a buffer the GPU is reading')),
-    t(L('skickar (flush) när bufferten är full, vid glFlush eller SwapBuffers', 'flushes when the buffer is full, at glFlush or at SwapBuffers')),
+    t(L('skickar när bufferten är full, vid glFlush eller SwapBuffers', 'flushes when the buffer is full, at glFlush or at SwapBuffers')),
   ];
-  const s1 =
+  const p1 =
     api === 'opengl'
-      ? card(t(L('Det drivrutinen gör bakom dina anrop', 'What the driver does behind your calls')), [h('ol.cmd-hidden', {}, hiddenGl.map((x) => h('li', { text: x })))], 'cmd-side1')
-      : card(t(L('Det OpenGL gömde – nu ditt ansvar', 'What OpenGL hid – now your job')), [
+      ? h('div', {}, [h('ol.cmd-hidden', {}, hiddenGl.map((x) => h('li', { text: x })))])
+      : h('div', {}, [
           h('div.stat-row', {}, [
             stat(String(count(['sync'])), t(L('synk-anrop', 'sync calls')), 'glow-amber'),
             stat(String(count(['barrier'])), t(L('barriärer', 'barriers')), 'glow-magenta'),
             stat(String(count(['rec'])), t(L('inspelning', 'recording')), 'glow-cyan'),
           ]),
           h('p.cmd-p', {
-            html: t(
-              api === 'vulkan'
-                ? L('Fences och semaforer, bildlayouter (<code>UNDEFINED → COLOR_ATTACHMENT_OPTIMAL → PRESENT_SRC_KHR</code>) och kommandopoolens livscykel skriver du själv.', 'Fences and semaphores, image layouts (<code>UNDEFINED → COLOR_ATTACHMENT_OPTIMAL → PRESENT_SRC_KHR</code>) and the command pool’s life cycle are all written by you.')
-                : L('Fence-väntan, resurstillstånd (<code>PRESENT → RENDER_TARGET → PRESENT</code>) och allokatorns livscykel skriver du själv.', 'Fence waits, resource states (<code>PRESENT → RENDER_TARGET → PRESENT</code>) and the allocator’s life cycle are all written by you.'),
-            ),
+            html: t(api === 'vulkan'
+              ? L('OpenGL gömde allt detta. Här skriver du själv fences och semaforer, bildlayouter (<code>UNDEFINED → COLOR_ATTACHMENT_OPTIMAL → PRESENT_SRC_KHR</code>) och kommandopoolens livscykel.', 'OpenGL hid all of this. Here you write the fences and semaphores, image layouts (<code>UNDEFINED → COLOR_ATTACHMENT_OPTIMAL → PRESENT_SRC_KHR</code>) and the command pool’s life cycle yourself.')
+              : L('OpenGL gömde allt detta. Här skriver du själv fence-väntan, resurstillstånd (<code>PRESENT → RENDER_TARGET → PRESENT</code>) och allokatorns livscykel.', 'OpenGL hid all of this. Here you write the fence waits, resource states (<code>PRESENT → RENDER_TARGET → PRESENT</code>) and the allocator’s life cycle yourself.')),
           }),
-        ], 'cmd-side1');
-
-  const pk = h('div.cmd-pk', {}, cmds.filter((c) => !['sync'].includes(c.kind)).map((c) => h(`span.k-${c.kind}`, { attrs: { title: c.call } })));
+        ]);
   const subTxt: Record<ApiId, Text> = {
-    opengl: L('Ingen explicit submit: drivrutinen skickar sin interna buffert vid <code>SwapBuffers</code> (eller när den är full). Synk sker implicit.', 'No explicit submit: the driver sends its internal buffer at <code>SwapBuffers</code> (or when it fills up). Synchronization is implicit.'),
-    vulkan: L('<code>vkQueueSubmit2</code> väntar på <code>imageAvailable[f]</code>, signalerar <code>renderFinished</code> (för present) och fencen <code>inFlight[f]</code> (för CPU:n).', '<code>vkQueueSubmit2</code> waits on <code>imageAvailable[f]</code>, signals <code>renderFinished</code> (for present) and the fence <code>inFlight[f]</code> (for the CPU).'),
-    d3d12: L('<code>ExecuteCommandLists</code> köar listan; <code>Signal(fence, ++value)</code> efteråt säger när GPU:n är klar så allokatorn kan återanvändas.', '<code>ExecuteCommandLists</code> queues the list; a <code>Signal(fence, ++value)</code> afterwards tells when the GPU is done so the allocator can be reused.'),
+    opengl: L('Ingen explicit submit: drivrutinen skickar sin interna buffert vid <code>SwapBuffers</code> (eller när den är full).', 'No explicit submit: the driver sends its internal buffer at <code>SwapBuffers</code> (or when it fills up).'),
+    vulkan: L('<code>vkQueueSubmit2</code> väntar på <code>imageAvailable[f]</code>, signalerar <code>renderFinished</code> och fencen <code>inFlight[f]</code>.', '<code>vkQueueSubmit2</code> waits on <code>imageAvailable[f]</code>, signals <code>renderFinished</code> and the fence <code>inFlight[f]</code>.'),
+    d3d12: L('<code>ExecuteCommandLists</code> köar listan; <code>Signal(fence, ++value)</code> säger när GPU:n är klar så allokatorn kan återanvändas.', '<code>ExecuteCommandLists</code> queues the list; <code>Signal(fence, ++value)</code> tells when the GPU is done so the allocator can be reused.'),
   };
-  const s2 = card(t(L('Inspelning → kö → GPU', 'Recording → queue → GPU')), [
-    h('div.cmd-flow', {}, [
-      h('div.cmd-box', {}, [h('b', { text: api === 'opengl' ? t(L('drivrutinens buffert', "driver's buffer")) : api === 'vulkan' ? 'VkCommandBuffer' : 'CommandList' }), pk]),
-      h('div.cmd-arrow', { text: api === 'opengl' ? 'SwapBuffers' : api === 'vulkan' ? 'vkQueueSubmit2' : 'ExecuteCommandLists' }),
-      h('div.cmd-box.q', {}, [h('b', { text: api === 'd3d12' ? 'ID3D12CommandQueue' : api === 'vulkan' ? 'VkQueue' : 'queue' }), h('span', { text: 'GPU' })]),
+  const p2 = h('div', {}, [
+    h('div.stat-row', {}, [
+      stat(String(cmds.filter((c) => RECORDED.includes(c.kind)).length), t(L('inspelade kommandon', 'recorded commands')), 'glow-cyan'),
+      stat(api === 'opengl' ? 'SwapBuffers' : api === 'vulkan' ? 'vkQueueSubmit2' : 'ExecuteCommandLists', 'submit', 'glow-amber'),
     ]),
     h('p.cmd-p', { html: t(subTxt[api]) }),
-    legend.cloneNode(true) as HTMLElement,
-  ], 'cmd-side2');
+    legend(),
+  ]);
+  const titles = [listTitle, api === 'opengl' ? t(L('Det drivrutinen gör bakom dina anrop', 'What the driver does behind your calls')) : t(L('Det OpenGL gömde – nu ditt ansvar', 'What OpenGL hid – now your job')), t(L('Spela in → stäng → skicka', 'Record → close → submit'))];
 
+  // Step 3: the live CPU / queue / GPU timeline in a bottom panel.
   const tlHost = h('div.cmd-tl');
-  const s3 = card(t(L(`CPU och GPU parallellt – ${FIF} frames i flykten`, `CPU and GPU in parallel – ${FIF} frames in flight`)), [tlHost, h('p.cmd-p.small', {
-    text: t(api === 'opengl'
-      ? L('I OpenGL sköter drivrutinen detta (ofta 2–3 frames före). Färg = frame-slot f = n mod 2.', 'In OpenGL the driver manages this (often 2–3 frames ahead). Color = frame slot f = n mod 2.')
-      : L(`Fence f blockerar CPU:n innan den återanvänder slot f = n mod ${FIF} (kommandobuffert, UBO-kopia).`, `Fence f blocks the CPU before it reuses slot f = n mod ${FIF} (command buffer, UBO copy).`)),
-  })], 'cmd-side3');
+  const presEl = h('div.v.glow-cyan', { text: 'F0' });
+  const p3 = h('div.cmd-tlwrap', {}, [
+    tlHost,
+    h('div.cmd-tlside', {}, [
+      h('div.stat', {}, [presEl, h('div.k', { text: t(L('visas nu', 'on screen')) })]),
+      stat(String(FIF), t(L('frames i flykten', 'frames in flight')), 'glow-amber'),
+      h('p.cmd-p.small', {
+        text: t(api === 'opengl'
+          ? L('Drivrutinen sköter detta åt dig (ofta 2–3 frames före).', 'The driver manages this for you (often 2–3 frames ahead).')
+          : L(`Fence f blockerar CPU:n innan slot f = n mod ${FIF} återanvänds.`, `Fence f blocks the CPU before slot f = n mod ${FIF} is reused.`)),
+      }),
+    ]),
+  ]);
 
-  const sides = [s0, s1, s2, s3];
-  const right = h('div.cmd-right', {}, sides);
-  const root = h('div.cmd-data', {}, [listCard, right]);
-  host.append(root);
-
+  let lastRow = -2;
+  const sc = cmdScene(host, ctx, false, cmds, {
+    row: (i) => {
+      if (i === lastRow) return;
+      lastRow = i;
+      rows.forEach((r, k) => r.classList.toggle('mark', k === i));
+      const r = rows[i];
+      if (r) list.scrollTop = Math.max(0, r.offsetTop - list.offsetTop - list.clientHeight / 2);
+    },
+    drawn: (n) => (drawnEl.textContent = n.toLocaleString('en-US')),
+    presented: (k) => (presEl.textContent = `F${k}`),
+  });
+  const ms = sc.ms;
+  const panels = [p0, p1, p2].map((c, i) => ms.panel(titles[i], [c], { className: 'cmd-p' + i }));
+  const tlPanel = ms.panel(t(L(`CPU och GPU parallellt – ${FIF} frames i flykten`, `CPU and GPU in parallel – ${FIF} frames in flight`)), [p3], { side: 'bottom', className: 'cmd-tlpanel' });
   const lanes: [string, string, string] = ['CPU', t(L('kö', 'queue')), 'GPU'];
   const tl = liveCanvas(tlHost, (g, w, hh, time) =>
     drawTimeline(g, 0, 0, w, hh, 2.6 + time * 1.1, {
@@ -449,30 +692,24 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
     }),
   );
 
-  const marks: ((c: Cmd) => boolean)[] = [
-    (c) => c.kind === 'draw',
-    (c) => (api === 'opengl' ? true : c.kind === 'sync' || c.kind === 'barrier'),
-    (c) => c.kind === 'rec' || c.kind === 'submit',
-    (c) => c.kind === 'sync' || c.kind === 'submit',
-  ];
-
   return {
     show(step, animate) {
-      root.dataset.step = String(step);
-      sides.forEach((s, i) => s.classList.toggle('on', i === step));
-      rows.forEach((r, i) => r.classList.toggle('mark', marks[step](cmds[i])));
+      lastRow = -2;
+      panels.forEach((p, i) => (p.style.display = i === step || (i === 0 && step < 3) ? '' : 'none'));
+      tlPanel.style.display = step === 3 ? '' : 'none';
       if (step === 3) tl.start();
       else tl.stop();
-      if (!animate) return;
-      gsap.fromTo(sides[step], { opacity: 0, y: 12 }, { opacity: 1, y: 0, duration: dur(0.4) });
-      if (step === 0) gsap.fromTo(rows, { opacity: 0, x: -14 }, { opacity: 1, x: 0, stagger: 0.035, duration: dur(0.3) });
-      if (step === 2) gsap.fromTo(pk.children, { opacity: 0, scale: 0.3 }, { opacity: 1, scale: 1, stagger: 0.05, duration: dur(0.25) });
-      const first = rows.find((r) => r.classList.contains('mark'));
-      first?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      if (step === 1 || step === 2) {
+        const mark = (c: Cmd) => (step === 1 ? (api === 'opengl' ? true : c.kind === 'sync' || c.kind === 'barrier') : c.kind === 'rec' || c.kind === 'submit');
+        rows.forEach((r, i) => r.classList.toggle('sel', mark(cmds[i])));
+      } else rows.forEach((r) => r.classList.remove('sel'));
+      if (animate) gsap.fromTo(step === 3 ? tlPanel : panels[step], { opacity: 0, y: 10 }, { opacity: 1, y: 0, duration: dur(0.4) });
+      sc.show(step, animate);
     },
     destroy() {
       tl.destroy();
-      gsap.killTweensOf([...rows, ...sides, ...Array.from(pk.children)]);
+      gsap.killTweensOf([...panels, tlPanel]);
+      sc.destroy();
     },
   };
 }
@@ -483,189 +720,60 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
 function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
   const { t } = ctx;
   const api = ctx.state.api;
-  const apiC = API_HEX[api];
-  const wrap = h('div.v-fill.cmdc-wrap');
-  const caption = h('div.pack-caption.cmdc-caption');
-  host.append(wrap, caption);
-  let step = 0;
-
-  const glPk = ['glUseProgram', 'glBindVertexArray', 'glBindBufferBase', 'glDrawElements', 'glDrawElements', 'SwapBuffers'];
-  const vkPk = ['Barrier', 'BeginRendering', 'BindPipeline', 'BindVertexBuffers', 'DrawIndexed', 'EndRendering'];
-  const dxPk = ['ResourceBarrier', 'OMSetRenderTargets', 'SetPipelineState', 'IASetVertexBuffers', 'DrawIndexedInstanced', 'Close'];
-  const bufName = api === 'd3d12' ? 'ID3D12GraphicsCommandList' : api === 'vulkan' ? 'VkCommandBuffer' : 'VkCommandBuffer / CommandList';
-  const submitName = api === 'd3d12' ? 'ExecuteCommandLists' : 'vkQueueSubmit2';
-  const lanes: [string, string, string] = ['CPU', t(L('kö', 'queue')), 'GPU'];
+  const idx = ctx.state.mesh.indices.length;
+  // A generic command stream – the idea, not one API's spelling.
+  const cmds: Cmd[] = [
+    { call: t(L('vänta på frame-slot', 'wait for frame slot')), args: '', kind: 'sync' },
+    { call: t(L('börja spela in', 'begin recording')), args: '', kind: 'rec' },
+    { call: t(L('barriär', 'barrier')), args: '', kind: 'barrier' },
+    { call: t(L('börja rendering · rensa', 'begin rendering · clear')), args: '', kind: 'pass' },
+    { call: t(L('bind pipeline', 'bind pipeline')), args: '', kind: 'bind' },
+    { call: 'viewport', args: '', kind: 'state' },
+    { call: t(L('bind vertexbuffert', 'bind vertex buffer')), args: '', kind: 'bind' },
+    { call: t(L('bind indexbuffert', 'bind index buffer')), args: '', kind: 'bind' },
+    { call: t(L('bind uniforms', 'bind uniforms')), args: '', kind: 'bind' },
+    { call: 'draw', args: `${idx} index`, kind: 'draw' },
+    { call: t(L('avsluta rendering', 'end rendering')), args: '', kind: 'pass' },
+    { call: t(L('stäng bufferten', 'close the buffer')), args: '', kind: 'rec' },
+    { call: 'submit', args: t(L('till kön', 'to the queue')), kind: 'submit' },
+  ];
   const captions = [
-    L('GPU:n kör inte dina funktionsanrop direkt. Kommandon samlas i en <b>kommandobuffert</b>, som skickas till en <b>kö</b> som GPU:n betar av.', 'The GPU does not run your function calls directly. Commands are collected in a <b>command buffer</b>, which is sent to a <b>queue</b> that the GPU works through.'),
+    L('GPU:n kör inte dina funktionsanrop direkt. Kommandon samlas i en <b>kommandobuffert</b>, skickas till en <b>kö</b> – och först då ritar GPU:n trianglarna, i indexordning.', 'The GPU does not run your function calls directly. Commands are collected in a <b>command buffer</b> and sent to a <b>queue</b> – only then does the GPU draw the triangles, in index order.'),
     L('OpenGL: drivrutinen spelar in i en dold buffert bakom dina <code>glDraw*</code>-anrop och skickar den när den vill – synk sker automatiskt.', 'OpenGL: the driver records into a hidden buffer behind your <code>glDraw*</code> calls and sends it when it likes – sync is automatic.'),
     L('Vulkan/D3D12: du äger bufferten. Du spelar in, stänger och skickar den själv – och kan spela in flera parallellt på olika trådar.', 'Vulkan/D3D12: you own the buffer. You record it, close it and submit it yourself – and can record several in parallel on different threads.'),
-    L(`CPU:n spelar in frame N+1 medan GPU:n kör frame N. Med ${FIF} frames i flykten väntar CPU:n på en <b>fence</b> innan den återanvänder en frames resurser.`, `The CPU records frame N+1 while the GPU executes frame N. With ${FIF} frames in flight the CPU waits on a <b>fence</b> before it reuses a frame’s resources.`),
+    L(`CPU:n spelar in frame N+1 medan GPU:n kör frame N. Med ${FIF} frames i flykten väntar CPU:n på en <b>fence</b> innan den återanvänder en frames resurser. Modellen visar varje färdig frame.`, `The CPU records frame N+1 while the GPU executes frame N. With ${FIF} frames in flight the CPU waits on a <b>fence</b> before it reuses a frame’s resources. The model shows each finished frame.`),
   ];
-
-  const P = 3.4; // seconds per packet cycle
-  const drawPackets = (g: CanvasRenderingContext2D, W: number, Ht: number, time: number) => {
-    const gl = step === 1;
-    const labels = gl ? glPk : api === 'd3d12' ? dxPk : vkPk;
-    const y = Ht * 0.5;
-    const srcX = 16;
-    const bufX = W * 0.27;
-    const bufW = W * 0.3;
-    const qX = W * 0.64;
-    const qW = W * 0.13;
-    const gpuX = W * 0.84;
-    const gpuW = W - gpuX - 14;
-    const boxH = Math.min(78, Ht * 0.8);
-    const tau = time % P;
-    g.font = '600 10.5px Inter, system-ui, sans-serif';
-    g.textBaseline = 'middle';
-    // source
-    g.fillStyle = C.cyan;
-    g.fillText(gl ? t(L('din kod', 'your code')) : t(L('CPU-tråd', 'CPU thread')), srcX, y - boxH / 2 - 8);
-    g.strokeStyle = 'rgba(56,225,255,0.6)';
-    rrect(g, srcX, y - boxH / 2, 70, boxH, 10);
-    g.stroke();
-    // command buffer box
-    const closed = tau > 2.0 && tau < 2.5;
-    g.save();
-    g.shadowColor = gl ? 'transparent' : apiC;
-    g.shadowBlur = closed ? 26 : 10;
-    g.strokeStyle = gl ? 'rgba(154,163,199,0.5)' : apiC;
-    g.setLineDash(gl ? [5, 4] : []);
-    g.fillStyle = gl ? 'rgba(154,163,199,0.08)' : `${apiC}18`;
-    rrect(g, bufX, y - boxH / 2, bufW, boxH, 10);
-    g.fill();
-    g.stroke();
-    g.restore();
-    g.fillStyle = gl ? C.muted : apiC;
-    g.fillText(gl ? t(L('drivrutinen – dold buffert', 'driver – hidden buffer')) : bufName, bufX, y - boxH / 2 - 8);
-    // queue
-    g.strokeStyle = 'rgba(155,123,255,0.7)';
-    rrect(g, qX, y - boxH / 2, qW, boxH, 10);
-    g.stroke();
-    g.fillStyle = C.violet;
-    g.fillText(t(L('kö', 'queue')), qX, y - boxH / 2 - 8);
-    // GPU
-    const busy = tau > 2.9 || tau < 0.3;
-    g.save();
-    g.shadowColor = C.magenta;
-    g.shadowBlur = busy ? 30 : 8;
-    g.strokeStyle = C.magenta;
-    g.fillStyle = busy ? 'rgba(255,63,210,0.25)' : 'rgba(255,63,210,0.08)';
-    rrect(g, gpuX, y - boxH / 2, gpuW, boxH, 10);
-    g.fill();
-    g.stroke();
-    g.restore();
-    g.fillStyle = C.magenta;
-    g.fillText('GPU', gpuX, y - boxH / 2 - 8);
-    // arrows
-    g.strokeStyle = 'rgba(160,175,255,0.35)';
-    g.beginPath();
-    g.moveTo(srcX + 72, y);
-    g.lineTo(bufX - 2, y);
-    g.moveTo(bufX + bufW + 2, y);
-    g.lineTo(qX - 2, y);
-    g.moveTo(qX + qW + 2, y);
-    g.lineTo(gpuX - 2, y);
-    g.stroke();
-    g.fillStyle = C.dim;
-    g.font = '600 10px JetBrains Mono, ui-monospace, monospace';
-    g.fillText(gl ? 'SwapBuffers' : submitName, bufX + bufW + 6, y + 12);
-    // packets
-    const slotW = (bufW - 16) / 6;
-    const pkH = 18;
-    for (let i = 0; i < 6; i++) {
-      const tStart = 0.15 + i * 0.25;
-      const tSlot = tStart + 0.45;
-      let px: number;
-      let py: number;
-      let alpha = 1;
-      const slotX = bufX + 8 + i * slotW;
-      const slotY = y - pkH / 2 + (i % 2 ? 10 : -10);
-      if (tau < tStart) continue;
-      if (tau < tSlot) {
-        const p = (tau - tStart) / 0.45;
-        const e = p * p * (3 - 2 * p);
-        px = srcX + 20 + (slotX - srcX - 20) * e;
-        py = y - pkH / 2 + (slotY - (y - pkH / 2)) * e;
-      } else if (tau < 2.5) {
-        px = slotX;
-        py = slotY;
-      } else if (tau < 2.9) {
-        // whole buffer travels into the queue
-        const p = (tau - 2.5) / 0.4;
-        px = slotX + (qX + 6 + (i % 3) * ((qW - 12) / 3) - slotX) * p;
-        py = slotY + (y - pkH / 2 + (i < 3 ? -12 : 12) - slotY) * p;
-      } else {
-        const p = Math.min(1, (tau - 2.9) / 0.45);
-        px = qX + 6 + (i % 3) * ((qW - 12) / 3) + (gpuX + gpuW / 2 - qX - 6 - (i % 3) * ((qW - 12) / 3)) * p;
-        py = y - pkH / 2 + (i < 3 ? -12 : 12) * (1 - p);
-        alpha = 1 - p;
-      }
-      const wPk = tau >= 2.5 ? (qW - 14) / 3 : slotW - 4;
-      const col = labels[i].includes('Draw') ? C.magenta : labels[i].includes('arrier') ? C.amber : gl ? C.muted : apiC;
-      g.globalAlpha = alpha;
-      g.shadowColor = col;
-      g.shadowBlur = 10;
-      g.fillStyle = `${col}40`;
-      g.strokeStyle = col;
-      rrect(g, px, py, wPk, pkH, 4);
-      g.fill();
-      g.stroke();
-      g.shadowBlur = 0;
-      if (wPk > 34 && !gl) {
-        g.fillStyle = C.text;
-        g.font = '600 9px JetBrains Mono, ui-monospace, monospace';
-        g.fillText(labels[i].slice(0, Math.floor(wPk / 5.6)), px + 3, py + pkH / 2);
-      }
-      g.globalAlpha = 1;
-    }
-    if (gl) {
-      // the calls you make, above the hidden box
-      g.font = '600 10px JetBrains Mono, ui-monospace, monospace';
-      g.fillStyle = C.cyan;
-      const k = Math.min(5, Math.floor(tau / 0.4));
-      g.fillText(glPk[k] + '(…)', srcX, y + boxH / 2 + 14);
-      g.fillStyle = 'rgba(5,6,13,0.55)';
-      rrect(g, bufX + 1, y - boxH / 2 + 1, bufW - 2, boxH - 2, 10);
-      g.fill();
-      g.fillStyle = C.muted;
-      g.font = 'italic 600 11px Inter, system-ui, sans-serif';
-      g.fillText(t(L('(dold för dig)', '(hidden from you)')), bufX + bufW / 2 - 44, y);
-    }
-  };
-
-  const canvasHost = h('div.cmdc-canvas');
-  wrap.append(canvasHost);
-  const cv = liveCanvas(canvasHost, (g, W, Ht, time) => {
-    const top = 12;
-    const split = step === 3 ? Ht * 0.3 : Ht * 0.62;
-    g.save();
-    g.globalAlpha = step === 3 ? 0.35 : 1;
-    drawPackets(g, W, split - top, time);
-    g.restore();
-    g.globalAlpha = step === 3 ? 1 : 0.22;
-    drawTimeline(g, 14, split + 6, W - 28, Ht - split - 12, 3 + time * 1.05, {
+  const caption = h('p.cmd-caption');
+  // Each step gets the stream that fits it: GL for step 1, explicit for the others.
+  const scenes = [cmdScene(host, ctx, true, cmds, {})];
+  const ms = scenes[0].ms;
+  ms.panel(t(L('Vad händer', 'What happens')), [caption], { side: 'top', className: 'cmd-cap' });
+  const tlHost = h('div.cmd-tl.small');
+  const tlPanel = ms.panel(t(L('CPU · kö · GPU', 'CPU · queue · GPU')), [tlHost], { side: 'bottom', className: 'cmd-tlpanel' });
+  const lanes: [string, string, string] = ['CPU', t(L('kö', 'queue')), 'GPU'];
+  const tl = liveCanvas(tlHost, (g, w, hh, time) =>
+    drawTimeline(g, 0, 0, w, hh, 2.6 + time * 1.1, {
       api,
       lanes,
       cpuLabel: (k) => `${t(L('spelar in', 'record'))} F${k}`,
       gpuLabel: (k) => `${t(L('kör', 'run'))} F${k}`,
       waitLabel: t(L('väntar på fence', 'wait on fence')),
-      fenceLabel: t(L('◆ fence: GPU klar med frame → CPU får återanvända dess slot', '◆ fence: GPU done with a frame → the CPU may reuse its slot')),
-    });
-    g.globalAlpha = 1;
-  });
-
+      fenceLabel: t(L('◆ fence: GPU klar → CPU får återanvända slotten', '◆ fence: GPU done → the CPU may reuse the slot')),
+    }),
+  );
   return {
-    show(s, animate) {
-      step = s;
-      caption.innerHTML = t(captions[s]);
-      cv.start();
-      cv.redraw();
+    show(step, animate) {
+      caption.innerHTML = t(captions[step]);
+      tlPanel.style.display = step === 3 ? '' : 'none';
+      if (step === 3) tl.start();
+      else tl.stop();
       if (animate) gsap.fromTo(caption, { opacity: 0, y: 6 }, { opacity: 1, y: 0, duration: dur(0.35) });
+      scenes[0].show(step, animate);
     },
     destroy() {
-      cv.destroy();
+      tl.destroy();
       gsap.killTweensOf(caption);
+      scenes[0].destroy();
     },
   };
 }

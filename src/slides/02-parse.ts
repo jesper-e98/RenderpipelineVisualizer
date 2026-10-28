@@ -4,7 +4,6 @@ import {
   BufferAttribute,
   BufferGeometry,
   CanvasTexture,
-  Color,
   Group,
   LineBasicMaterial,
   LineSegments,
@@ -12,11 +11,11 @@ import {
   Mesh,
   MeshBasicMaterial,
   PlaneGeometry,
-  Points,
-  ShaderMaterial,
   SphereGeometry,
+  TorusGeometry,
   Vector3,
   WireframeGeometry,
+  type ShaderMaterial,
 } from 'three';
 import { dur, escapeHtml, h } from '../core/dom';
 import { SHOWCASE_ROT_X, SHOWCASE_ROT_Y } from '../core/derived';
@@ -24,8 +23,9 @@ import { L, type Text } from '../core/i18n';
 import type { ApiId } from '../core/state';
 import type { MeshData } from '../model/types';
 import { formatBytes } from '../pipeline/layout';
-import { COLORS, disposeScene, makeScene, starfield } from '../views/three-helpers';
-import { card, stat } from '../views/widgets';
+import { createModelStage, secs, type ModelStage, type Particles } from '../views/ModelStage';
+import { COLORS, label } from '../views/three-helpers';
+import { stat } from '../views/widgets';
 import { standardSlide } from './standard';
 import type { ApiPanelSpec, CodeSnippet, SlideContext, Visual } from './types';
 import '../styles/slides/parse.css';
@@ -159,7 +159,7 @@ function parseDemo(m: MeshData): Demo {
         label,
         out:
           `<span class="mono">float${n}</span> ${v3(exact, 4)}` +
-          `<div class="ps-bits">${escapeHtml(String(nums[0]))} → float32 <b>${f32hex(nums[0])}</b>${exact[0] !== nums[0] ? ` <span class="ps-dim">= ${exact[0].toPrecision(9)}</span>` : ''}</div>`,
+          `<div class="pa-bits">${escapeHtml(String(nums[0]))} → float32 <b>${f32hex(nums[0])}</b>${exact[0] !== nums[0] ? ` <span class="pa-dim">= ${exact[0].toPrecision(9)}</span>` : ''}</div>`,
       });
     };
     vec('v', 3, 'c-pos', L('position', 'position'));
@@ -179,7 +179,7 @@ function parseDemo(m: MeshData): Demo {
         label: L(`yta med ${refs.length} hörn`, `face with ${refs.length} corners`),
         out:
           has.map((k) => `<span class="mono">${names[k]}</span> [${col(k).join(', ')}]`).join('<br>') +
-          '<div class="ps-bits">%IDX%</div>',
+          '<div class="pa-bits">%IDX%</div>',
       });
     }
     return {
@@ -220,12 +220,12 @@ function parseDemo(m: MeshData): Demo {
   const map = hexBytes(pv);
   if (kind === 'stl-bin') {
     const head = (readAscii(map, 0, 40) ?? '').replace(/\.+$/, '');
-    rows.push({ src: 'bytes 0–79', cls: 'b-head', label: L('header (ignoreras)', 'header (ignored)'), out: `<span class="mono ps-dim">${head ? `"${escapeHtml(head)}…"` : '00 00 00 …'}</span>` });
+    rows.push({ src: 'bytes 0–79', cls: 'b-head', label: L('header (ignoreras)', 'header (ignored)'), out: `<span class="mono pa-dim">${head ? `"${escapeHtml(head)}…"` : '00 00 00 …'}</span>` });
     rows.push({
       src: 'bytes 80–83',
       cls: 'b-len',
       label: L('uint32 antal trianglar', 'uint32 triangle count'),
-      out: `<b>${m.triangleCount.toLocaleString('en-US')}</b> <span class="ps-dim">→ 84 + 50 × ${m.triangleCount} = ${(84 + 50 * m.triangleCount).toLocaleString('en-US')} B ${84 + 50 * m.triangleCount === m.fileSize ? '✓' : ''}</span>`,
+      out: `<b>${m.triangleCount.toLocaleString('en-US')}</b> <span class="pa-dim">→ 84 + 50 × ${m.triangleCount} = ${(84 + 50 * m.triangleCount).toLocaleString('en-US')} B ${84 + 50 * m.triangleCount === m.fileSize ? '✓' : ''}</span>`,
     });
     const n = readF32s(map, 84, 3);
     if (n) rows.push({ src: 'bytes 84–95', cls: 'b-nrm', label: L('normal, 3 × float32', 'normal, 3 × float32'), out: v3(n) });
@@ -233,7 +233,7 @@ function parseDemo(m: MeshData): Demo {
       const p = readF32s(map, 96 + k * 12, 3);
       if (p) rows.push({ src: `bytes ${96 + k * 12}–${107 + k * 12}`, cls: k === 1 ? 'b-pos2' : 'b-pos', label: L(`hörn ${k}, 3 × float32`, `corner ${k}, 3 × float32`), out: v3(p) });
     }
-    rows.push({ src: 'bytes 132–133', cls: 'b-attr', label: L('uint16 attribut', 'uint16 attribute'), out: '<span class="ps-dim">%ATTR%</span>' });
+    rows.push({ src: 'bytes 132–133', cls: 'b-attr', label: L('uint16 attribut', 'uint16 attribute'), out: '<span class="pa-dim">%ATTR%</span>' });
     return {
       rows,
       lines: [],
@@ -250,7 +250,7 @@ function parseDemo(m: MeshData): Demo {
     const len = readU32(map, 8);
     const clen = readU32(map, 12);
     const ctype = readAscii(map, 16, 4);
-    rows.push({ src: 'bytes 0–3', cls: 'b-magic', label: L('magic', 'magic'), out: `"${magic}" <span class="ps-dim">0x46546C67</span>` });
+    rows.push({ src: 'bytes 0–3', cls: 'b-magic', label: L('magic', 'magic'), out: `"${magic}" <span class="pa-dim">0x46546C67</span>` });
     rows.push({ src: 'bytes 4–7', cls: 'b-ver', label: L('version', 'version'), out: String(ver) });
     rows.push({ src: 'bytes 8–11', cls: 'b-len', label: L('total längd', 'total length'), out: `${len?.toLocaleString('en-US')} B ${len === m.fileSize ? '✓' : ''}` });
     rows.push({ src: 'bytes 12–19', cls: 'b-clen', label: L('chunk 0: längd + typ', 'chunk 0: length + type'), out: `${clen?.toLocaleString('en-US')} B · "${ctype}"` });
@@ -258,7 +258,7 @@ function parseDemo(m: MeshData): Demo {
       src: `bytes 20–${20 + (clen ?? 0) - 1}`,
       cls: 'b-json',
       label: L('JSON: accessors → bufferViews', 'JSON: accessors → bufferViews'),
-      out: '<span class="ps-dim">%BIN%</span>',
+      out: '<span class="pa-dim">%BIN%</span>',
     });
     return {
       rows,
@@ -289,462 +289,450 @@ function parseDemo(m: MeshData): Demo {
 }
 
 /* ------------------------------------------------------------------ */
-/* Real data                                                           */
+/* The file's first lines as a glowing page in 3D                      */
 /* ------------------------------------------------------------------ */
-function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
-  const { t } = ctx;
-  const m = ctx.state.mesh;
-  const kind = kindOf(m);
-  const demo = parseDemo(m);
-  const fileName = `${m.name}.${m.format === 'builtin' ? 'obj' : m.format.toLowerCase()}`;
+const LINE_HEX: Record<string, string> = { 'c-pos': '#38e1ff', 'c-nrm': '#ff3fd2', 'c-uv': '#ffb547', 'c-idx': '#5cf08f', 'l-com': '#6f78a8', 'l-meta': '#9b7bff' };
 
-  // ---- Left: the file as the parser sees it ----
-  const lineEls = m.sourcePreview.map((line) => {
-    if (m.sourceIsBinary && /^[0-9a-f]{8} {2}/.test(line)) {
-      const off = parseInt(line.slice(0, 8), 16);
-      const bytes = line.slice(10, 57).trim().split(/\s+/);
-      return h('div.ps-line.hex', {}, [
-        h('span.ps-off', { text: line.slice(0, 8) }),
-        ...bytes.map((b, i) => h(`span.ps-b.${byteClass(kind, off + i)}`, { text: b })),
-        h('span.ps-ascii', { text: line.slice(59) }),
-      ]);
-    }
-    return h(`div.ps-line${lineClass(kind, line) ? '.' + lineClass(kind, line) : ''}`, { text: line || ' ' });
-  });
-  const srcBox = h('div.ps-src.v-scroll', {}, lineEls);
-  const left = h('div.card.ps-file', {}, [
-    h('div.ps-file-head', {}, [
-      h('span.ps-file-name', { text: fileName }),
-      h('span.ps-chip', { text: m.sourceIsBinary ? 'binary' : 'text' }),
-      h('span.ps-chip', { text: formatBytes(m.fileSize) }),
-    ]),
-    srcBox,
-  ]);
-
-  // ---- Right: one card per step ----
-  const firstLine = m.sourcePreview.find((l) => l.trim().length) ?? '';
-  const headBytes = m.sourceIsBinary
-    ? Array.from(readBytes(hexBytes(m.sourcePreview), 0, 16) ?? new Uint8Array())
-    : Array.from(new TextEncoder().encode(firstLine).slice(0, 16));
-  const bytesCard = card(t(L('1 · Filen är bara bytes', '1 · The file is just bytes')), [
-    h('div.stat-row', {}, [
-      stat(formatBytes(m.fileSize), t(L('på disk', 'on disk')), 'glow-amber'),
-      stat(m.format === 'builtin' ? 'OBJ' : m.format, t(L('format', 'format')), 'glow-cyan'),
-      stat(m.sourceIsBinary ? 'binary' : 'UTF-8', t(L('kodning', 'encoding'))),
-    ]),
-    h('div.ps-bytes', {}, [
-      h('div.ps-bytes-row', {}, headBytes.map((b) => h('span.ps-byte', { text: b.toString(16).padStart(2, '0') }))),
-      h('div.ps-bytes-row.ascii', {}, headBytes.map((b) => h('span.ps-byte', { text: b >= 32 && b < 127 ? String.fromCharCode(b) : '·' }))),
-    ]),
-    h('p.ps-note', {
-      html: t(
-        m.sourceIsBinary
-          ? L('Läst med <code>std::ifstream(…, std::ios::binary)</code> eller <code>fread</code>. Binära format kan ofta kopieras direkt – siffrorna ligger redan som float32.', 'Read with <code>std::ifstream(…, std::ios::binary)</code> or <code>fread</code>. Binary formats can often be copied directly – the numbers are already float32.')
-          : L('Även text är bytes: varje tecken är en byte (ASCII/UTF-8). För GPU:n betyder <code>"0.5"</code> ingenting – texten måste tolkas till riktiga tal.', 'Text is bytes too: each character is one byte (ASCII/UTF-8). To a GPU, <code>"0.5"</code> means nothing – the text has to be parsed into real numbers.'),
-      ),
-    }),
-  ]);
-
-  const parseCard = card(t(L('2 · Tolka posterna', '2 · Parse the records')), [
-    h(
-      'div.ps-demo.v-scroll',
-      {},
-      demo.rows.map((r) =>
-        h('div.ps-row', {}, [
-          h(`code.ps-in.${r.cls}`, { text: r.src }),
-          h('span.ps-arrow', { text: '→' }),
-          h('div.ps-out', {}, [
-            h('div.ps-lab', { text: t(r.label) }),
-            h('div', {
-              html: r.out
-                .replace('%IDX%', t(L('1-baserat i filen → 0-baserat i minnet', '1-based in the file → 0-based in memory')))
-                .replace('%ATTR%', t(L('oftast 0 (ibland färg)', 'usually 0 (sometimes colour)')))
-                .replace('%BIN%', t(L('sedan chunk 1 "BIN\\0" med rå float32-/uint-data', 'then chunk 1 "BIN\\0" with raw float32/uint data'))),
-            }),
-          ]),
-        ]),
-      ),
-    ),
-    h('p.ps-note', { html: t(demo.note) }),
-  ]);
-
-  const corners = m.triangleCount * 3;
-  const reuse = corners / Math.max(1, m.vertexCount);
-  const flag = (had: boolean, yes: Text, no: Text, cls: string) =>
-    h(`div.ps-flag.${had ? 'yes' : 'gen'}`, {}, [h(`span.${cls}`, { text: had ? '✓' : '✳' }), h('span', { html: t(had ? yes : no) })]);
-  const weldCard = card(t(L('3 · Svetsa och komplettera', '3 · Weld and fill in')), [
-    h('div.ps-flags', {}, [
-      flag(m.had.indices, L('<b>index</b> fanns i filen', '<b>indices</b> were in the file'), L('<b>index</b> skapade genom svetsning: identiska hörn slås ihop (tolerans 1e-5)', '<b>indices</b> created by welding: identical corners are merged (tolerance 1e-5)'), 'c-idx'),
-      flag(m.had.normals, L('<b>normaler</b> fanns i filen', '<b>normals</b> were in the file'), L('<b>normaler</b> genererade: ytnormaler viktade med area, medelvärde per vertex', '<b>normals</b> generated: face normals weighted by area, averaged per vertex'), 'c-nrm'),
-      flag(m.had.uvs, L('<b>UV</b> fanns i filen', '<b>UVs</b> were in the file'), L('<b>UV</b> saknas – vertexen blir 24 B i stället för 32 B', '<b>UVs</b> missing – the vertex becomes 24 B instead of 32 B'), 'c-uv'),
-    ]),
-    h('div.ps-bars', {}, [
-      h('div.ps-bar-row', {}, [h('span.ps-bar-k', { text: t(L('triangelhörn', 'triangle corners')) }), h('div.ps-bar', {}, [h('i', { style: { width: '100%' } })]), h('b.mono', { text: corners.toLocaleString('en-US') })]),
-      h('div.ps-bar-row', {}, [
-        h('span.ps-bar-k', { text: t(L('unika vertices', 'unique vertices')) }),
-        h('div.ps-bar.c', {}, [h('i', { style: { width: `${Math.max(1, Math.min(100, (100 * m.vertexCount) / corners))}%` } })]),
-        h('b.mono.glow-cyan', { text: m.vertexCount.toLocaleString('en-US') }),
-      ]),
-    ]),
-    h('p.ps-note', {
-      html: t(
-        L(
-          `Varje vertex används i snitt av <b>${reuse.toFixed(2)}</b> triangelhörn. ${kind === 'obj' ? 'I OBJ blir varje unik kombination (position, UV, normal) en egen vertex.' : kind === 'stl-ascii' || kind === 'stl-bin' ? 'STL upprepar delade hörn, så svetsningen sparar mycket.' : 'glTF är redan indexerat på samma sätt som GPU:n vill ha det.'}`,
-          `Each vertex is used by <b>${reuse.toFixed(2)}</b> triangle corners on average. ${kind === 'obj' ? 'In OBJ, every unique (position, UV, normal) combination becomes its own vertex.' : kind === 'stl-ascii' || kind === 'stl-bin' ? 'STL repeats shared corners, so welding saves a lot.' : 'glTF is already indexed the way the GPU wants it.'}`,
-        ),
-      ),
-    }),
-  ]);
-
-  const s0 = m.normalizeScale;
-  const c0 = m.originalCenter;
-  const pN = Array.from(m.positions.subarray(0, 3));
-  const pO = pN.map((x, i) => x / s0 + c0[i]);
-  const arr = (name: string, type: string, n: number, bytes: number, cls: string) =>
-    h('tr', {}, [h(`td.${cls}`, { text: name }), h('td.mono', { text: `${type}(${n.toLocaleString('en-US')})` }), h('td.mono', { text: formatBytes(bytes) })]);
-  const total = m.positions.byteLength + m.normals.byteLength + (m.uvs?.byteLength ?? 0) + m.indices.byteLength;
-  const normCard = card(t(L('4 · Normalisera och packa i arrayer', '4 · Normalize and pack into arrays')), [
-    h('div.ps-formula', {
-      html: `p′ = (p − c) · s &nbsp; <span class="ps-dim">c = ${v3(c0, 3)}, s = 1 / r = ${s0.toPrecision(4)}</span>`,
-    }),
-    h('div.ps-row.ps-v0', {}, [
-      h('code.ps-in.c-pos', { text: `v0 ${v3(pO, 3)}` }),
-      h('span.ps-arrow', { text: '→' }),
-      h('div.ps-out', {}, [h('div.ps-lab', { text: t(L('i enhetssfären', 'inside the unit sphere')) }), h('div.mono.glow-cyan', { text: v3(pN, 4) })]),
-    ]),
-    h('table.layout-table.ps-arrays', {}, [
-      h('tbody', {}, [
-        arr('positions', 'Float32Array', m.positions.length, m.positions.byteLength, 'c-pos'),
-        arr('normals', 'Float32Array', m.normals.length, m.normals.byteLength, 'c-nrm'),
-        m.uvs ? arr('uvs', 'Float32Array', m.uvs.length, m.uvs.byteLength, 'c-uv') : h('tr', {}, [h('td.c-uv', { text: 'uvs' }), h('td.mono.ps-dim', { text: '—' }), h('td')]),
-        arr('indices', 'Uint32Array', m.indices.length, m.indices.byteLength, 'c-idx'),
-        h('tr.ps-total', {}, [h('td', { text: t(L('totalt i RAM', 'total in RAM')) }), h('td'), h('td.mono.glow-amber', { text: formatBytes(total) })]),
-      ]),
-    ]),
-  ]);
-
-  const cards = [bytesCard, parseCard, weldCard, normCard];
-  const right = h('div.ps-right', {}, cards);
-  const grid = h('div.ps-grid', {}, [left, right]);
-  host.append(grid);
-
-  return {
-    show(step, animate) {
-      cards.forEach((c, i) => (c.style.display = i === step ? '' : 'none'));
-      lineEls.forEach((el, i) => el.classList.toggle('hl', step === 1 && demo.lines.includes(i)));
-      srcBox.classList.toggle('dimmed', step === 1 && demo.lines.length > 0);
-      left.classList.toggle('faded', step >= 2);
-      if (step === 1 && demo.lines.length) {
-        const first = lineEls[demo.lines[0]];
-        srcBox.scrollTo({ top: Math.max(0, first.offsetTop - srcBox.offsetTop - 40), behavior: animate ? 'smooth' : 'auto' });
-      } else if (step === 0) srcBox.scrollTop = 0;
-      if (!animate) {
-        const kids = cards[step].querySelectorAll('.ps-byte, .ps-row, .ps-flag, tr');
-        const bars = cards[step].querySelectorAll('.ps-bar i');
-        if (kids.length) gsap.set(kids, { opacity: 1, x: 0, y: 0 });
-        if (bars.length) gsap.set(bars, { scaleX: 1 });
-        gsap.set(cards[step], { opacity: 1, x: 0 });
-        return;
-      }
-      const c = cards[step];
-      gsap.fromTo(c, { opacity: 0, x: 24 }, { opacity: 1, x: 0, duration: dur(0.45), ease: 'power2.out' });
-      if (step === 0) gsap.fromTo(c.querySelectorAll('.ps-byte'), { opacity: 0, y: -10 }, { opacity: 1, y: 0, stagger: 0.02, duration: dur(0.3) });
-      if (step === 1) gsap.fromTo(c.querySelectorAll('.ps-row'), { opacity: 0, x: -16 }, { opacity: 1, x: 0, stagger: 0.09, duration: dur(0.35), delay: dur(0.1) });
-      if (step === 2) {
-        gsap.fromTo(c.querySelectorAll('.ps-flag'), { opacity: 0, y: 8 }, { opacity: 1, y: 0, stagger: 0.1, duration: dur(0.3) });
-        gsap.fromTo(c.querySelectorAll('.ps-bar i'), { scaleX: 0 }, { scaleX: 1, transformOrigin: 'left center', duration: dur(0.9), ease: 'power3.out', stagger: 0.25 });
-      }
-      if (step === 3) gsap.fromTo(c.querySelectorAll('tr'), { opacity: 0, x: 12 }, { opacity: 1, x: 0, stagger: 0.06, duration: dur(0.3) });
-    },
-    destroy() {
-      gsap.killTweensOf(cards);
-    },
-  };
-}
-
-/* ------------------------------------------------------------------ */
-/* Concept: characters melt into points that assemble into the model   */
-/* ------------------------------------------------------------------ */
-const PARTICLE_VS = /* glsl */ `
-attribute vec3 aStart;
-attribute vec3 aEnd;
-attribute vec3 aColor;
-attribute float aDelay;
-uniform float uMix;
-uniform float uTime;
-uniform float uSize;
-uniform float uDim;
-uniform mat4 uEnd;
-varying vec3 vColor;
-varying float vAlpha;
-void main() {
-  float k = clamp((uMix * 1.5 - aDelay * 0.5), 0.0, 1.0);
-  float e = k * k * (3.0 - 2.0 * k);
-  vec3 endW = (uEnd * vec4(aEnd, 1.0)).xyz;
-  vec3 p = mix(aStart, endW, e);
-  // swirl while in flight
-  float arc = sin(e * 3.14159);
-  p += vec3(sin(aDelay * 40.0 + uTime) * 0.5, cos(aDelay * 23.0) * 0.6, 0.9) * arc * (0.35 + aDelay * 0.4);
-  p += vec3(sin(uTime * 2.0 + aDelay * 90.0), cos(uTime * 1.7 + aDelay * 60.0), 0.0) * 0.006;
-  vec3 endColor = mix(vec3(0.22, 0.88, 1.0), vec3(1.0, 0.25, 0.82), clamp(aEnd.y * 0.5 + 0.5, 0.0, 1.0));
-  vColor = mix(aColor, endColor, e) * (1.0 + arc * 0.6);
-  vAlpha = mix(1.0, uDim, e);
-  vec4 mv = viewMatrix * vec4(p, 1.0);
-  gl_PointSize = uSize * (1.0 + arc * 1.5) * (3.2 / -mv.z);
-  gl_Position = projectionMatrix * mv;
-}`;
-const PARTICLE_FS = /* glsl */ `
-varying vec3 vColor;
-varying float vAlpha;
-void main() {
-  vec2 d = gl_PointCoord - 0.5;
-  float r = length(d);
-  if (r > 0.5) discard;
-  float a = smoothstep(0.5, 0.0, r);
-  gl_FragColor = vec4(vColor * a * 0.55, a * vAlpha);
-}`;
-
-/** Area-weighted random points on the mesh surface (plus every vertex if there are few). */
-function surfaceSamples(m: MeshData, n: number): Float32Array {
-  const P = m.positions;
-  const I = m.indices;
-  const T = m.triangleCount;
-  const cdf = new Float64Array(T);
-  let acc = 0;
-  const a = new Vector3();
-  const b = new Vector3();
-  const c = new Vector3();
-  for (let t = 0; t < T; t++) {
-    a.fromArray(P, I[t * 3] * 3);
-    b.fromArray(P, I[t * 3 + 1] * 3).sub(a);
-    c.fromArray(P, I[t * 3 + 2] * 3).sub(a);
-    acc += b.cross(c).length();
-    cdf[t] = acc;
-  }
-  const out = new Float32Array(n * 3);
-  for (let i = 0; i < n; i++) {
-    if (i < Math.min(m.vertexCount, n / 3)) {
-      out.set(P.subarray(i * 3, i * 3 + 3), i * 3);
-      continue;
-    }
-    const r = Math.random() * acc;
-    let lo = 0;
-    let hi = T - 1;
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1;
-      if (cdf[mid] < r) lo = mid + 1;
-      else hi = mid;
-    }
-    const t = lo;
-    let u = Math.random();
-    let v = Math.random();
-    if (u + v > 1) {
-      u = 1 - u;
-      v = 1 - v;
-    }
-    for (let k = 0; k < 3; k++) {
-      const p0 = P[I[t * 3] * 3 + k];
-      out[i * 3 + k] = p0 + (P[I[t * 3 + 1] * 3 + k] - p0) * u + (P[I[t * 3 + 2] * 3 + k] - p0) * v;
-    }
-  }
-  return out;
-}
-
-function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
-  const { t } = ctx;
-  const m = ctx.state.mesh;
-  const { scene, camera } = makeScene();
-  const stars = starfield(600);
-  scene.add(stars);
-
-  // ---- The "page": the file's own text, drawn into a texture ----
+function textPage(m: MeshData, width: number) {
   const CW = 1024;
   const CH = 512;
-  const page = document.createElement('canvas');
-  page.width = CW;
-  page.height = CH;
-  const pg = page.getContext('2d')!;
+  const c = document.createElement('canvas');
+  c.width = CW;
+  c.height = CH;
+  const g = c.getContext('2d')!;
   const kind = kindOf(m);
-  const src = m.sourcePreview.slice(0, 22);
-  const lh = Math.min(26, (CH - 30) / src.length);
-  pg.font = `600 ${Math.round(lh * 0.78)}px JetBrains Mono, ui-monospace, monospace`;
-  pg.textBaseline = 'top';
-  const colorOf = (line: string) => {
-    if (m.sourceIsBinary) return '#9fdcff';
-    const c = lineClass(kind, line);
-    return { 'c-pos': '#38e1ff', 'c-nrm': '#ff3fd2', 'c-uv': '#ffb547', 'c-idx': '#5cf08f', 'l-com': '#6f78a8', 'l-meta': '#9b7bff' }[c] ?? '#cfd6ff';
-  };
-  src.forEach((line, i) => {
-    pg.fillStyle = colorOf(line);
-    pg.fillText(line.slice(0, 74), 24, 16 + i * lh);
+  const lines = m.sourcePreview.slice(0, 20);
+  const lh = Math.min(26, (CH - 24) / Math.max(1, lines.length));
+  g.font = `600 ${Math.round(lh * 0.8)}px JetBrains Mono, ui-monospace, monospace`;
+  g.textBaseline = 'top';
+  lines.forEach((line, i) => {
+    g.fillStyle = m.sourceIsBinary ? '#9fdcff' : LINE_HEX[lineClass(kind, line)] ?? '#cfd6ff';
+    g.fillText(line.slice(0, 70), 18, 12 + i * lh);
   });
-  const PW = 4.4;
-  const PH = (PW * CH) / CW;
-  const tex = new CanvasTexture(page);
-  const pageMat = new MeshBasicMaterial({ map: tex, transparent: true, opacity: 0.35, depthWrite: false, blending: AdditiveBlending });
-  const pageMesh = new Mesh(new PlaneGeometry(PW, PH), pageMat);
-  pageMesh.lookAt(camera.position);
-  scene.add(pageMesh);
-
-  // ---- Particles: start on lit text pixels, end on the mesh surface ----
-  const N = Math.min(3200, Math.max(1600, m.vertexCount * 2));
-  const img = pg.getImageData(0, 0, CW, CH).data;
   const lit: number[] = [];
+  const img = g.getImageData(0, 0, CW, CH).data;
   for (let y = 0; y < CH; y += 2) for (let x = 0; x < CW; x += 2) if (img[(y * CW + x) * 4 + 3] > 120) lit.push(x, y);
-  const start = new Float32Array(N * 3);
-  const col = new Float32Array(N * 3);
-  const delay = new Float32Array(N);
-  const tmp = new Vector3();
-  const color = new Color();
-  for (let i = 0; i < N; i++) {
-    const k = lit.length ? Math.floor(Math.random() * (lit.length / 2)) * 2 : 0;
-    const px = lit[k] ?? Math.random() * CW;
-    const py = lit[k + 1] ?? Math.random() * CH;
-    tmp.set((px / CW - 0.5) * PW, (0.5 - py / CH) * PH, 0).applyQuaternion(pageMesh.quaternion);
-    start.set([tmp.x, tmp.y, tmp.z], i * 3);
-    const o = ((py | 0) * CW + (px | 0)) * 4;
-    color.setRGB(img[o] / 255, img[o + 1] / 255, img[o + 2] / 255);
-    col.set([color.r, color.g, color.b], i * 3);
-    delay[i] = px / CW * 0.7 + Math.random() * 0.3; // melt left → right, like reading
-  }
-  const geo = new BufferGeometry();
-  geo.setAttribute('position', new BufferAttribute(start, 3));
-  geo.setAttribute('aStart', new BufferAttribute(start, 3));
-  geo.setAttribute('aEnd', new BufferAttribute(surfaceSamples(m, N), 3));
-  geo.setAttribute('aColor', new BufferAttribute(col, 3));
-  geo.setAttribute('aDelay', new BufferAttribute(delay, 1));
-  const uniforms = {
-    uMix: { value: 0 },
-    uTime: { value: 0 },
-    uSize: { value: 4.2 * Math.min(window.devicePixelRatio || 1, 2) },
-    uDim: { value: 1 },
-    uEnd: { value: new Matrix4() },
+  const tex = new CanvasTexture(c);
+  const H = (width * CH) / CW;
+  const mat = new MeshBasicMaterial({ map: tex, transparent: true, opacity: 0, depthWrite: false, blending: AdditiveBlending });
+  const mesh = new Mesh(new PlaneGeometry(width, H), mat);
+  return {
+    mesh,
+    mat,
+    tex,
+    /** n positions on glyph pixels (local plane space), read left → right, top → bottom when `ordered`. */
+    sample(n: number, ordered: boolean): Float32Array {
+      const out = new Float32Array(n * 3);
+      const pairs = lit.length / 2;
+      for (let i = 0; i < n; i++) {
+        const k = pairs ? (ordered ? Math.floor((i / n) * pairs) : Math.floor(Math.random() * pairs)) * 2 : 0;
+        const px = lit[k] ?? Math.random() * CW;
+        const py = lit[k + 1] ?? Math.random() * CH;
+        out[i * 3] = (px / CW - 0.5) * width;
+        out[i * 3 + 1] = (0.5 - py / CH) * H;
+        out[i * 3 + 2] = 0;
+      }
+      return out;
+    },
   };
-  const particles = new Points(
-    geo,
-    new ShaderMaterial({ vertexShader: PARTICLE_VS, fragmentShader: PARTICLE_FS, uniforms, transparent: true, depthWrite: false, blending: AdditiveBlending }),
-  );
-  particles.frustumCulled = false;
-  scene.add(particles);
+}
 
-  // ---- The model group: unique vertices, normals, and a unit-sphere gizmo ----
-  const pivot = new Group();
-  const tilt = new Group();
-  tilt.rotation.set(SHOWCASE_ROT_X, SHOWCASE_ROT_Y, 0);
-  pivot.add(tilt);
-  scene.add(pivot);
-  const stepV = Math.max(1, Math.ceil(m.vertexCount / 3000));
-  const nv = Math.ceil(m.vertexCount / stepV);
-  const vpos = new Float32Array(nv * 3);
-  const npos = new Float32Array(nv * 6);
-  for (let i = 0, j = 0; i < m.vertexCount && j < nv; i += stepV, j++) {
-    const p = m.positions.subarray(i * 3, i * 3 + 3);
-    const n = m.normals.subarray(i * 3, i * 3 + 3);
-    vpos.set(p, j * 3);
-    npos.set([p[0], p[1], p[2], p[0] + n[0] * 0.1, p[1] + n[1] * 0.1, p[2] + n[2] * 0.1], j * 6);
-  }
-  const vg = new BufferGeometry();
-  vg.setAttribute('position', new BufferAttribute(vpos, 3));
-  const vMat = new ShaderMaterial({
-    uniforms: { uOpacity: { value: 0 }, uSize: { value: 5 * Math.min(window.devicePixelRatio || 1, 2) } },
-    vertexShader: 'uniform float uSize; void main(){ vec4 mv = modelViewMatrix * vec4(position,1.0); gl_PointSize = uSize * (3.2 / -mv.z); gl_Position = projectionMatrix * mv; }',
-    fragmentShader: 'uniform float uOpacity; void main(){ float r = length(gl_PointCoord-0.5); if (r>0.5) discard; float a = smoothstep(0.5,0.1,r); gl_FragColor = vec4(vec3(1.0,0.95,0.8)*a*0.7, a*uOpacity); }',
-    transparent: true,
-    depthWrite: false,
-    blending: AdditiveBlending,
+/* ------------------------------------------------------------------ */
+/* Both modes: the model is built up in 3D as the file is parsed       */
+/** Pull the camera back on narrow views so `halfWidth` world units (around the origin) stay in frame. */
+function fitWidth(ms: ModelStage, halfWidth: number): void {
+  const base = ms.camera.position.length();
+  const prev = ms.view.onResize;
+  ms.view.onResize = (w, hh) => {
+    prev?.(w, hh);
+    const tanH = Math.tan((ms.camera.fov * Math.PI) / 360);
+    const need = halfWidth / (tanH * Math.max(0.3, w / hh)) + 0.6;
+    ms.camera.position.setLength(Math.max(base, Math.min(12, need)));
+  };
+}
+
+/* ------------------------------------------------------------------ */
+function parseVisual(host: HTMLElement, ctx: SlideContext, concept: boolean): Visual {
+  const { t } = ctx;
+  const m = ctx.state.mesh;
+  const kind = kindOf(m);
+  const ms = createModelStage(host, ctx, {
+    shift: concept ? 0 : -0.19,
+    eye: [0, 1.05, 4.5],
+    autoRotate: 0,
+    bloom: 0.45,
+    bloomThreshold: 0.86,
+    layers: { solid: 0, wire: 0, points: 0, normals: 0 },
   });
-  const verts = new Points(vg, vMat);
-  const ng = new BufferGeometry();
-  ng.setAttribute('position', new BufferAttribute(npos, 3));
-  const nMat = new LineBasicMaterial({ color: COLORS.magenta, transparent: true, opacity: 0, depthWrite: false, blending: AdditiveBlending });
-  const normals = new LineSegments(ng, nMat);
-  tilt.add(verts, normals);
-
-  const gizmoMat = new LineBasicMaterial({ color: COLORS.green, transparent: true, opacity: 0, depthWrite: false });
-  const gizmo = new LineSegments(new WireframeGeometry(new SphereGeometry(1, 24, 12)), gizmoMat);
-  const axesGeo = new BufferGeometry();
-  axesGeo.setAttribute('position', new BufferAttribute(new Float32Array([-1.3, 0, 0, 1.3, 0, 0, 0, -1.3, 0, 0, 1.3, 0, 0, 0, -1.3, 0, 0, 1.3]), 3));
-  const axesMat = new LineBasicMaterial({ color: COLORS.amber, transparent: true, opacity: 0, depthWrite: false });
-  const axes = new LineSegments(axesGeo, axesMat);
-  scene.add(gizmo, axes);
+  ms.overlay.classList.add('pa-ms');
+  fitWidth(ms, 1.45);
+  const u = ms.material.uniforms;
+  const v = new Vector3();
 
   // "Raw" placement before normalization: offset + scaled like the file's own coordinates.
   const inv = 1 / m.normalizeScale;
-  const rawScale = Math.min(1.45, Math.max(0.6, inv));
+  const rawScale = Math.min(1.25, Math.max(0.6, inv));
   const cLen = Math.hypot(...m.originalCenter);
-  const rawOffset = cLen > 1e-6
-    ? new Vector3(...m.originalCenter).multiplyScalar(Math.min(0.9, cLen * m.normalizeScale) / cLen)
-    : new Vector3(0, 0, 0);
+  const rawOffset = cLen > 1e-6 ? new Vector3(...m.originalCenter).multiplyScalar(Math.min(0.6, cLen * m.normalizeScale) / cLen) : new Vector3();
   if (rawOffset.length() < 0.05 && Math.abs(rawScale - 1) < 0.05) rawOffset.set(0, 0, 0);
+  const norm = { k: 0 }; // 0 = raw file coordinates, 1 = normalized
+  const applyNorm = () => {
+    ms.pivot.scale.setScalar(rawScale + (1 - rawScale) * norm.k);
+    ms.pivot.position.copy(rawOffset).multiplyScalar(1 - norm.k);
+  };
+  applyNorm();
 
-  const state = { mix: 0, page: 0.35, dim: 1, verts: 0, nrm: 0, gizmo: 0, norm: 0 };
-  const apply = () => {
-    uniforms.uMix.value = state.mix;
-    uniforms.uDim.value = state.dim;
-    pageMat.opacity = state.page;
-    vMat.uniforms.uOpacity.value = state.verts;
-    nMat.opacity = state.nrm;
-    gizmoMat.opacity = state.gizmo * 0.22;
-    axesMat.opacity = state.gizmo * 0.6;
-    const sc = rawScale + (1 - rawScale) * state.norm;
-    pivot.scale.setScalar(sc);
-    pivot.position.copy(rawOffset).multiplyScalar(1 - state.norm);
+  /* ---- 3D props ---- */
+  const page = textPage(m, 2.6);
+  page.mesh.position.set(0, 0.05, 0.6);
+  page.mesh.lookAt(ms.camera.position);
+  ms.scene.add(page.mesh);
+  page.mesh.updateMatrixWorld(true);
+
+  // Step 1: characters → numbers → vertices, in the order the parser emits them.
+  const NV = Math.min(2400, m.vertexCount);
+  const vstep = m.vertexCount / NV;
+  const vHome = new Float32Array(NV * 3);
+  for (let i = 0; i < NV; i++) vHome.set(m.positions.subarray(Math.floor(i * vstep) * 3, Math.floor(i * vstep) * 3 + 3), i * 3);
+  const read = ms.particles(NV, COLORS.cyan, 0.032, 'model');
+  const readMat = read.points.material as ShaderMaterial;
+  readMat.uniforms.uArc.value = 0.25;
+  if (!concept) {
+    // File order: particle i leaves the page and lands at vertex i, one after another.
+    const d = read.points.geometry.attributes.aDelay.array as Float32Array;
+    for (let i = 0; i < NV; i++) d[i] = (i / NV) * 0.65;
+    read.points.geometry.attributes.aDelay.needsUpdate = true;
+  }
+  const pageInModel = () => {
+    ms.pivot.updateMatrixWorld(true);
+    const toModel = new Matrix4().copy(ms.pivot.matrixWorld).invert().multiply(page.mesh.matrixWorld);
+    const out = page.sample(NV, !concept);
+    for (let i = 0; i < NV; i++) v.fromArray(out, i * 3).applyMatrix4(toModel).toArray(out, i * 3);
+    return out;
   };
 
-  // HUD
-  const hud = h('div.ps-hud');
-  const view = {
-    scene,
-    camera,
-    bloom: 0.55,
-    bloomThreshold: 0.3,
-    orbit: true,
-    onFrame: (time: number, dt: number) => {
-      stars.tick(time);
-      uniforms.uTime.value = time;
-      if (state.mix > 0.98) pivot.rotation.y += dt * 0.25;
-      pivot.updateMatrixWorld(true);
-      uniforms.uEnd.value.copy(tilt.matrixWorld);
-    },
-  };
-  const stage = h('div.v-fill');
-  host.append(stage, hud);
-  ctx.stage.attach(stage, view);
+  // Step 2: every triangle corner on its own (pushed out along its face), then welded together.
+  const T = m.triangleCount;
+  const NC = Math.min(3000, T * 3);
+  const cornerFrom = new Float32Array(NC * 3);
+  const cornerTo = new Float32Array(NC * 3);
+  const P = m.positions;
+  const I = m.indices;
+  const a = new Vector3();
+  const b = new Vector3();
+  const c = new Vector3();
+  for (let i = 0; i < NC; i++) {
+    const tri = Math.min(T - 1, Math.floor((Math.floor(i / 3) * 3 * T) / NC));
+    a.fromArray(P, I[tri * 3] * 3);
+    b.fromArray(P, I[tri * 3 + 1] * 3);
+    c.fromArray(P, I[tri * 3 + 2] * 3);
+    const n = b.clone().sub(a).cross(c.clone().sub(a)).normalize();
+    const corner = [a, b, c][i % 3];
+    const centroid = a.clone().add(b).add(c).divideScalar(3);
+    // Shrunk toward the face centre and pushed out: three separate corners per triangle.
+    v.copy(corner).lerp(centroid, 0.25).addScaledVector(n, 0.14).toArray(cornerFrom, i * 3);
+    corner.toArray(cornerTo, i * 3);
+  }
+  const weld = ms.particles(NC, COLORS.amber, 0.03, 'model');
+  weld.setTargets(cornerFrom, cornerTo);
+  (weld.points.material as ShaderMaterial).uniforms.uArc.value = 0;
 
-  const targets = [
-    { mix: 0, page: 0.35, dim: 1, verts: 0, nrm: 0, gizmo: 0, norm: 0 },
-    { mix: 1, page: 0.0, dim: 0.6, verts: 0, nrm: 0, gizmo: 0, norm: 0 },
-    { mix: 1, page: 0.0, dim: 0.12, verts: 0.7, nrm: 0.8, gizmo: 0, norm: 0 },
-    { mix: 1, page: 0.0, dim: 0.18, verts: 0.6, nrm: 0.35, gizmo: 1, norm: 1 },
+  // Step 3: the unit sphere every model is scaled into.
+  const gizmo = new Group();
+  const sphereMat = new LineBasicMaterial({ color: COLORS.green, transparent: true, opacity: 0, depthWrite: false });
+  const ringMat = new MeshBasicMaterial({ color: COLORS.green, transparent: true, opacity: 0, depthWrite: false, blending: AdditiveBlending });
+  const axesMat = new LineBasicMaterial({ color: COLORS.amber, transparent: true, opacity: 0, depthWrite: false });
+  const ring = new Mesh(new TorusGeometry(1, 0.01, 8, 160), ringMat);
+  ring.lookAt(ms.camera.position);
+  const axesGeo = new BufferGeometry();
+  axesGeo.setAttribute('position', new BufferAttribute(new Float32Array([-1.25, 0, 0, 1.25, 0, 0, 0, -1.25, 0, 0, 1.25, 0, 0, 0, -1.25, 0, 0, 1.25]), 3));
+  gizmo.add(new LineSegments(new WireframeGeometry(new SphereGeometry(1, 24, 12)), sphereMat), ring, new LineSegments(axesGeo, axesMat));
+  const rLbl = label(t(L('enhetssfär · r = 1 · centrum (0, 0, 0)', 'unit sphere · r = 1 · centre (0, 0, 0)')), 'green');
+  rLbl.position.set(0, 1.18, 0);
+  gizmo.add(rLbl);
+  ms.scene.add(gizmo);
+  const gz = { k: 0 };
+  const applyGizmo = () => {
+    sphereMat.opacity = gz.k * 0.16;
+    ringMat.opacity = gz.k * 0.9;
+    axesMat.opacity = gz.k * 0.55;
+    rLbl.visible = gz.k > 0.5;
+  };
+  applyGizmo();
+
+  /* ---- panels ---- */
+  const demo = parseDemo(m);
+  const fileName = `${m.name}.${m.format === 'builtin' ? 'obj' : m.format.toLowerCase()}`;
+  const corners = T * 3;
+  const reuse = corners / Math.max(1, m.vertexCount);
+  const total = m.positions.byteLength + m.normals.byteLength + (m.uvs?.byteLength ?? 0) + m.indices.byteLength;
+  const keyStats: HTMLElement[][] = [
+    [stat(formatBytes(m.fileSize), t(L('på disk', 'on disk')), 'glow-amber'), stat(m.format === 'builtin' ? 'OBJ' : m.format, m.sourceIsBinary ? 'binary' : 'text', 'glow-cyan')],
+    [stat(m.vertexCount.toLocaleString('en-US'), 'vertices', 'glow-cyan'), stat(T.toLocaleString('en-US'), t(L('trianglar', 'triangles')), 'glow-magenta')],
+    [stat(corners.toLocaleString('en-US'), t(L('hörn', 'corners'))), stat(m.vertexCount.toLocaleString('en-US'), t(L('unika vertices', 'unique vertices')), 'glow-cyan'), stat(`×${reuse.toFixed(2)}`, t(L('återanvändning', 'reuse')), 'glow-amber')],
+    [stat(`×${m.normalizeScale.toPrecision(3)}`, t(L('skala', 'scale')), 'glow-green'), stat(formatBytes(total), t(L('i RAM', 'in RAM')), 'glow-amber')],
   ];
-  const hudText = [
-    L(`<b>${formatBytes(m.fileSize)}</b> text och bytes – ännu inga tal`, `<b>${formatBytes(m.fileSize)}</b> of text and bytes – no numbers yet`),
-    L('Tecknen tolkas till <b>float32</b> – punkterna hittar sina platser', 'Characters are parsed into <b>float32</b> – the points find their places'),
-    L(`<b>${m.vertexCount.toLocaleString('en-US')}</b> unika vertices · normaler <span class="c-nrm">${m.had.normals ? 'från filen' : 'genererade'}</span>`, `<b>${m.vertexCount.toLocaleString('en-US')}</b> unique vertices · normals <span class="c-nrm">${m.had.normals ? 'from the file' : 'generated'}</span>`),
-    L(`Centrerad och skalad ×${m.normalizeScale.toPrecision(3)} in i <span style="color:var(--green)">enhetssfären</span>`, `Centered and scaled ×${m.normalizeScale.toPrecision(3)} into the <span style="color:var(--green)">unit sphere</span>`),
+  const keyPanel = ms.panel(t(L('Nyckeltal', 'Key numbers')), [h('div.stat-row.pa-keys')], { side: 'right', className: 'pa-key' });
+  const keyRow = keyPanel.querySelector('.pa-keys')!;
+
+  const detail: HTMLElement[] = [];
+  let lineEls: HTMLElement[] = [];
+  let srcBox: HTMLElement | null = null;
+  let caption: Element | null = null;
+  if (!concept) {
+    // The file as the parser sees it.
+    lineEls = m.sourcePreview.map((line) => {
+      if (m.sourceIsBinary && /^[0-9a-f]{8} {2}/.test(line)) {
+        const off = parseInt(line.slice(0, 8), 16);
+        const bytes = line.slice(10, 57).trim().split(/\s+/);
+        return h('div.pa-line.hex', {}, [
+          h('span.pa-off', { text: line.slice(0, 8) }),
+          ...bytes.map((bb, i) => h(`span.pa-b.${byteClass(kind, off + i)}`, { text: bb })),
+          h('span.pa-ascii', { text: line.slice(59) }),
+        ]);
+      }
+      return h(`div.pa-line${lineClass(kind, line) ? '.' + lineClass(kind, line) : ''}`, { text: line || ' ' });
+    });
+    srcBox = h('div.pa-src.v-scroll', {}, lineEls);
+    const filePanel = ms.panel(`${fileName} · ${formatBytes(m.fileSize)}`, [srcBox], { side: 'right', className: 'pa-file' });
+
+    const firstLine = m.sourcePreview.find((x) => x.trim().length) ?? '';
+    const headBytes = m.sourceIsBinary ? Array.from(readBytes(hexBytes(m.sourcePreview), 0, 16) ?? new Uint8Array()) : Array.from(new TextEncoder().encode(firstLine).slice(0, 16));
+    const bytesBody = [
+      h('div.pa-bytes', {}, [
+        h('div.pa-bytes-row', {}, headBytes.map((x) => h('span.pa-byte', { text: x.toString(16).padStart(2, '0') }))),
+        h('div.pa-bytes-row.ascii', {}, headBytes.map((x) => h('span.pa-byte', { text: x >= 32 && x < 127 ? String.fromCharCode(x) : '·' }))),
+      ]),
+      h('p.pa-note', {
+        html: t(
+          m.sourceIsBinary
+            ? L('Läst med <code>std::ifstream(…, std::ios::binary)</code>. Binära format kan ofta kopieras direkt – siffrorna ligger redan som float32.', 'Read with <code>std::ifstream(…, std::ios::binary)</code>. Binary formats can often be copied directly – the numbers are already float32.')
+            : L('Även text är bytes: ett tecken = en byte (ASCII/UTF-8). För GPU:n betyder <code>"0.5"</code> ingenting – texten måste tolkas till tal.', 'Text is bytes too: one character = one byte (ASCII/UTF-8). To a GPU, <code>"0.5"</code> means nothing – the text has to be parsed into numbers.'),
+        ),
+      }),
+    ];
+    const parseBody = [
+      h(
+        'div.pa-demo',
+        {},
+        demo.rows.map((r) =>
+          h('div.pa-row', {}, [
+            h(`code.pa-in.${r.cls}`, { text: r.src }),
+            h('span.pa-arrow', { text: '→' }),
+            h('div.pa-out', {}, [
+              h('div.pa-lab', { text: t(r.label) }),
+              h('div', {
+                html: r.out
+                  .replace('%IDX%', t(L('1-baserat i filen → 0-baserat i minnet', '1-based in the file → 0-based in memory')))
+                  .replace('%ATTR%', t(L('oftast 0 (ibland färg)', 'usually 0 (sometimes colour)')))
+                  .replace('%BIN%', t(L('sedan chunk 1 "BIN\\0" med rå float32-/uint-data', 'then chunk 1 "BIN\\0" with raw float32/uint data'))),
+              }),
+            ]),
+          ]),
+        ),
+      ),
+      h('p.pa-note', { html: t(demo.note) }),
+    ];
+    const flag = (had: boolean, yes: Text, no: Text, cls: string) => h(`div.pa-flag.${had ? 'yes' : 'gen'}`, {}, [h(`span.${cls}`, { text: had ? '✓' : '✳' }), h('span', { html: t(had ? yes : no) })]);
+    const weldBody = [
+      h('div.pa-flags', {}, [
+        flag(m.had.indices, L('<b>index</b> fanns i filen', '<b>indices</b> were in the file'), L('<b>index</b> skapade genom svetsning: identiska hörn slås ihop', '<b>indices</b> created by welding: identical corners are merged'), 'c-idx'),
+        flag(m.had.normals, L('<b>normaler</b> fanns i filen', '<b>normals</b> were in the file'), L('<b>normaler</b> genererade: ytnormaler viktade med area, medel per vertex', '<b>normals</b> generated: area-weighted face normals, averaged per vertex'), 'c-nrm'),
+        flag(m.had.uvs, L('<b>UV</b> fanns i filen', '<b>UVs</b> were in the file'), L('<b>UV</b> saknas – vertexen blir 24 B i stället för 32 B', '<b>UVs</b> missing – the vertex becomes 24 B instead of 32 B'), 'c-uv'),
+      ]),
+      h('div.pa-bars', {}, [
+        h('div.pa-bar-row', {}, [h('span.pa-bar-k', { text: t(L('triangelhörn', 'triangle corners')) }), h('div.pa-bar', {}, [h('i', { style: { width: '100%' } })]), h('b.mono', { text: corners.toLocaleString('en-US') })]),
+        h('div.pa-bar-row', {}, [
+          h('span.pa-bar-k', { text: t(L('unika vertices', 'unique vertices')) }),
+          h('div.pa-bar.c', {}, [h('i', { style: { width: `${Math.max(1, Math.min(100, (100 * m.vertexCount) / corners))}%` } })]),
+          h('b.mono.glow-cyan', { text: m.vertexCount.toLocaleString('en-US') }),
+        ]),
+      ]),
+      h('p.pa-note', {
+        html: t(
+          L(
+            `Varje vertex används i snitt av <b>${reuse.toFixed(2)}</b> hörn. ${kind === 'obj' ? 'I OBJ blir varje unik kombination (position, UV, normal) en egen vertex.' : kind.startsWith('stl') ? 'STL upprepar delade hörn, så svetsningen sparar mycket.' : 'glTF är redan indexerat som GPU:n vill ha det.'}`,
+            `Each vertex is used by <b>${reuse.toFixed(2)}</b> corners on average. ${kind === 'obj' ? 'In OBJ, every unique (position, UV, normal) combination becomes its own vertex.' : kind.startsWith('stl') ? 'STL repeats shared corners, so welding saves a lot.' : 'glTF is already indexed the way the GPU wants it.'}`,
+          ),
+        ),
+      }),
+    ];
+    const s0 = m.normalizeScale;
+    const c0 = m.originalCenter;
+    const pN = Array.from(m.positions.subarray(0, 3));
+    const pO = pN.map((x, i) => x / s0 + c0[i]);
+    const arr = (name: string, type: string, n: number, bytes: number, cls: string) =>
+      h('tr', {}, [h(`td.${cls}`, { text: name }), h('td.mono', { text: `${type}(${n.toLocaleString('en-US')})` }), h('td.mono', { text: formatBytes(bytes) })]);
+    const normBody = [
+      h('div.pa-formula', { html: `p′ = (p − c) · s <br><span class="pa-dim">c = ${v3(c0, 3)}, s = 1/r = ${s0.toPrecision(4)}</span>` }),
+      h('div.pa-row.pa-v0', {}, [
+        h('code.pa-in.c-pos', { text: `v0 ${v3(pO, 3)}` }),
+        h('span.pa-arrow', { text: '→' }),
+        h('div.pa-out', {}, [h('div.pa-lab', { text: t(L('i enhetssfären', 'inside the unit sphere')) }), h('div.mono.glow-cyan', { text: v3(pN, 4) })]),
+      ]),
+      h('table.layout-table.pa-arrays', {}, [
+        h('tbody', {}, [
+          arr('positions', 'Float32Array', m.positions.length, m.positions.byteLength, 'c-pos'),
+          arr('normals', 'Float32Array', m.normals.length, m.normals.byteLength, 'c-nrm'),
+          m.uvs ? arr('uvs', 'Float32Array', m.uvs.length, m.uvs.byteLength, 'c-uv') : h('tr', {}, [h('td.c-uv', { text: 'uvs' }), h('td.mono.pa-dim', { text: '—' }), h('td')]),
+          arr('indices', 'Uint32Array', m.indices.length, m.indices.byteLength, 'c-idx'),
+        ]),
+      ]),
+    ];
+    const titles = [L('1 · Filen är bara bytes', '1 · The file is just bytes'), L('2 · Tolka posterna', '2 · Parse the records'), L('3 · Svetsa och komplettera', '3 · Weld and fill in'), L('4 · Normalisera och packa', '4 · Normalize and pack')];
+    [bytesBody, parseBody, weldBody, normBody].forEach((body, i) => detail.push(ms.panel(t(titles[i]), body, { side: 'right', className: 'pa-detail' })));
+    detail.push(filePanel);
+  } else {
+    const cap = ms.panel(t(L('Vad händer', 'What happens')), [h('p.pa-cap')], { side: 'bottom' });
+    caption = cap.querySelector('.pa-cap');
+  }
+  const captions: Text[] = [
+    L(`<b>${formatBytes(m.fileSize)}</b> text och bytes – ännu inga tal. Modellen finns bara som tecken.`, `<b>${formatBytes(m.fileSize)}</b> of text and bytes – no numbers yet. The model exists only as characters.`),
+    L('Tecknen tolkas till <b>float32</b>: punkterna lämnar texten och hittar sina platser, sedan fylls ytorna i.', 'Characters are parsed into <b>float32</b>: the points leave the text and find their places, then the faces fill in.'),
+    L(`Hörn som är identiska <b>svetsas</b> ihop – ${corners.toLocaleString('en-US')} hörn blir ${m.vertexCount.toLocaleString('en-US')} vertices. Normaler <span class="c-nrm">${m.had.normals ? 'från filen' : 'genereras'}</span>.`, `Identical corners are <b>welded</b> – ${corners.toLocaleString('en-US')} corners become ${m.vertexCount.toLocaleString('en-US')} vertices. Normals <span class="c-nrm">${m.had.normals ? 'from the file' : 'are generated'}</span>.`),
+    L(`Centrerad och skalad ×${m.normalizeScale.toPrecision(3)} in i <span style="color:var(--green)">enhetssfären</span>.`, `Centered and scaled ×${m.normalizeScale.toPrecision(3)} into the <span style="color:var(--green)">unit sphere</span>.`),
   ];
-  let tween: gsap.core.Tween | null = null;
+
+  /* ---- animation ---- */
+  let step = -1;
+  let spin = false;
+  const timers: gsap.core.Tween[] = [];
+  const later = (animate: boolean, s: number, fn: () => void) => {
+    if (!animate) fn();
+    else timers.push(gsap.delayedCall(dur(s), fn));
+  };
+  ms.onFrame((time, dt) => {
+    if (spin) ms.pivot.rotation.y += dt * 0.25;
+    if (step === 0) page.mat.opacity = 0.75 + 0.1 * Math.sin(time * 2.4);
+  });
+  const uProg = (p: Particles) => (p.points.material as ShaderMaterial).uniforms.uProgress;
 
   return {
-    show(step, animate) {
-      tween?.kill();
-      const target = targets[step];
-      if (animate) {
-        tween = gsap.to(state, { ...target, duration: dur(step === 1 ? 2.6 : 1.4), ease: step === 1 ? 'none' : 'power2.inOut', onUpdate: apply });
-        gsap.fromTo(hud, { opacity: 0, y: 8 }, { opacity: 1, y: 0, duration: dur(0.4) });
-      } else {
-        Object.assign(state, target);
-        apply();
-        if (step === 0) pivot.rotation.y = 0;
+    show(stp, animate) {
+      step = stp;
+      const S = (s: number) => secs(animate, s);
+      timers.splice(0).forEach((x) => x.kill());
+      gsap.killTweensOf([...Object.values(u), ...Object.values(ms.layers).map((x) => x.material), page.mat, uProg(read), uProg(weld), norm, gz]);
+      u.uSweep.value = 100;
+      spin = false;
+      if (step < 3) ms.pivot.rotation.set(SHOWCASE_ROT_X, SHOWCASE_ROT_Y, 0);
+
+      // Panels
+      keyRow.replaceChildren(...keyStats[step]);
+      if (caption) caption.innerHTML = t(captions[step]);
+      detail.forEach((el, i) => {
+        if (i === 4) {
+          el.classList.toggle('collapsed', step >= 2);
+          return;
+        }
+        el.style.display = i === step ? '' : 'none';
+      });
+      if (srcBox) {
+        lineEls.forEach((el, i) => el.classList.toggle('hl', step === 1 && demo.lines.includes(i)));
+        srcBox.classList.toggle('dimmed', step === 1 && demo.lines.length > 0);
+        if (step === 1 && demo.lines.length) {
+          const first = lineEls[demo.lines[0]];
+          srcBox.scrollTop = Math.max(0, first.offsetTop - srcBox.offsetTop - 30);
+        } else if (step === 0) srcBox.scrollTop = 0;
       }
-      hud.innerHTML = t(hudText[step]);
+      if (animate) {
+        const cur = concept ? caption?.parentElement : detail[step];
+        if (cur) gsap.fromTo(cur, { opacity: 0, x: concept ? 0 : 16 }, { opacity: 1, x: 0, duration: dur(0.4), ease: 'power2.out' });
+      }
+
+      // 3D: normalization happens only in the last step.
+      if (step < 3) {
+        norm.k = 0;
+        gz.k = 0;
+      }
+      applyNorm();
+      applyGizmo();
+      page.mesh.visible = step <= 1;
+      read.points.visible = false;
+      weld.points.visible = false;
+      ms.drawTriangles(1e9, 0);
+      ms.explode(0, 0);
+      ms.setMode('shaded', 0, 0);
+
+      if (step === 0) {
+        // Only text: the particles ride on the glyphs; the model is a faint promise behind.
+        read.setTargets(pageInModel(), vHome);
+        read.progress(0, 0);
+        read.points.visible = true;
+        ms.setMode('ghost', 1, 0);
+        ms.setLayer('solid', 0.18, S(0.5));
+        ms.setLayer('wire', 0, S(0.4));
+        ms.setLayer('points', 0, S(0.4));
+        ms.setLayer('normals', 0, S(0.4));
+      } else if (step === 1) {
+        // Vertices appear in parse order, then the faces fill in, in index order.
+        ms.setLayer('normals', 0, S(0.3));
+        ms.setLayer('wire', 0, S(0.3));
+        const faces = () => {
+          ms.setLayer('points', 0.75, S(0.3));
+          ms.setLayer('wire', 0.18, S(0.6));
+          ms.setLayer('solid', 1, 0);
+          if (animate) {
+            ms.drawTriangles(0, 0);
+            ms.drawTriangles(T, 2.4);
+          }
+        };
+        if (animate) {
+          ms.setLayer('solid', 0, 0);
+          ms.setLayer('points', 0, 0);
+          read.setTargets(pageInModel(), vHome);
+          read.points.visible = true;
+          read.progress(0, 0);
+          read.progress(1, 3.2);
+          ms.tween(page.mat, { opacity: 0.08, duration: dur(2.8), ease: 'power1.in' });
+          later(true, 3.3, () => {
+            read.points.visible = false;
+            faces();
+          });
+        } else {
+          page.mat.opacity = 0.08;
+          faces();
+        }
+      } else if (step === 2) {
+        // Weld: every triangle's own corners slide together into shared vertices.
+        ms.setLayer('solid', 0.9, S(0.4));
+        ms.setLayer('wire', 0.25, S(0.4));
+        ms.setLayer('points', animate ? 0 : 0.8, S(0.3));
+        ms.setLayer('normals', 0.75, S(1.2));
+        weld.points.visible = animate;
+        weld.progress(0, 0);
+        if (animate) {
+          ms.explode(0.14, 0);
+          ms.explode(0, 2.2);
+          weld.progress(1, 2.2);
+          later(true, 2.4, () => {
+            weld.points.visible = false;
+            ms.setLayer('points', 0.8, 0.4);
+          });
+        }
+      } else {
+        // Normalize: centre on the origin and scale into the unit sphere.
+        ms.setLayer('solid', 1, S(0.5));
+        ms.setLayer('wire', 0.08, S(0.5));
+        ms.setLayer('points', 0.25, S(0.5));
+        ms.setLayer('normals', 0, S(0.5));
+        if (animate) {
+          ms.tween(norm, { k: 1, duration: dur(1.8), ease: 'power2.inOut', onUpdate: applyNorm });
+          ms.tween(gz, { k: 1, duration: dur(1.0), onUpdate: applyGizmo });
+        } else {
+          norm.k = 1;
+          gz.k = 1;
+          applyNorm();
+          applyGizmo();
+        }
+        spin = concept;
+      }
     },
     destroy() {
-      tween?.kill();
-      gsap.killTweensOf(hud);
-      if (ctx.stage.isAttachedTo(view)) ctx.stage.detach();
-      disposeScene(scene);
-      tex.dispose();
+      timers.forEach((x) => x.kill());
+      gsap.killTweensOf([...detail, caption?.parentElement ?? {}]);
+      page.tex.dispose();
+      ms.destroy();
     },
   };
 }
@@ -889,6 +877,6 @@ export default standardSlide({
     L('Modellen <b>normaliseras</b> – centreras och skalas in i enhetssfären – och hamnar i tätt packade <code>Float32Array</code> och <code>Uint32Array</code>.', 'The model is <b>normalized</b> – centered and scaled into the unit sphere – and ends up in tightly packed <code>Float32Array</code> and <code>Uint32Array</code>.'),
   ],
   api: apis,
-  data: dataVisual,
-  concept: conceptVisual,
+  data: (host, ctx) => parseVisual(host, ctx, false),
+  concept: (host, ctx) => parseVisual(host, ctx, true),
 });

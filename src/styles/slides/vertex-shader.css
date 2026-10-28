@@ -1,19 +1,20 @@
-/* ---------- Vertex shader: data ---------- */
-.vs-data { position: absolute; inset: 0; display: grid; grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr); }
-.vs-3d { position: relative; min-width: 0; min-height: 0; border-right: 1px solid var(--line); }
-.vs-hud { position: absolute; left: 12px; top: 10px; z-index: 2; pointer-events: none; font-family: var(--mono); font-size: 12px; color: var(--muted); padding: 4px 10px; border-radius: 8px; background: rgba(5, 6, 13, 0.6); border: 1px solid var(--line); max-width: calc(100% - 24px); }
-.vs-side-panel { padding: 12px 14px; display: grid; align-content: start; gap: 10px; height: 100%; }
-.vs-card { display: grid; gap: 8px; background: rgba(8, 10, 24, 0.7); }
-.vs-card h4 { margin: 0; }
+/* ---------- Vertex shader: data panels ---------- */
+@media (min-width: 901px) {
+  .ms-slot.right:has(.vs-panel) { width: min(44%, 400px); }
+}
+.vs-panel .stat .v { font-size: 13.5px; white-space: nowrap; }
+.vs-panel .vs-eq-wrap { margin-top: 8px; }
+.vs-panel .vs-note { margin-top: 6px; font-size: 12px; }
+.vs-chain-panel .vs-chain { padding: 4px 6px; }
 .vs-eq-wrap { overflow-x: auto; }
-.vs-eq { display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; }
+.vs-eq { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; }
 .vs-named { display: grid; justify-items: center; gap: 3px; }
 .vs-name { font-family: var(--mono); font-size: 11px; color: var(--muted); white-space: nowrap; }
-.vs-named.mat .matrix { font-size: 11.5px; gap: 1px 8px; }
-.vs-op { font-family: var(--mono); color: var(--dim); font-size: 18px; margin-top: 14px; }
-.matrix.vs-col { grid-template-columns: auto; gap: 1px; padding: 6px 8px; font-size: 11.5px; }
+.vs-named.mat .matrix { font-size: 10.5px; gap: 1px 6px; padding: 4px 6px; }
+.vs-op { font-family: var(--mono); color: var(--dim); font-size: 15px; margin-top: 14px; }
+.matrix.vs-col { grid-template-columns: auto; gap: 1px; padding: 4px 6px; font-size: 10.5px; }
 .matrix.vs-col.hot { border-color: currentColor; box-shadow: 0 0 18px -4px currentColor, inset 0 0 12px -6px currentColor; background: rgba(255, 255, 255, 0.03); }
-.matrix.vs-m3 { grid-template-columns: repeat(3, auto); font-size: 11.5px; gap: 1px 8px; }
+.matrix.vs-m3 { grid-template-columns: repeat(3, auto); font-size: 10.5px; gap: 1px 6px; padding: 4px 6px; }
 .vs-side { margin-left: auto; display: grid; justify-items: center; gap: 3px; opacity: 0.85; }
 .vs-note { font-size: 12.5px; color: var(--muted); line-height: 1.45; }
 .vs-note b { color: var(--text); }
@@ -30,13 +31,9 @@
 .three-label.vs-tag { font-size: 10px; padding: 1px 6px; color: var(--muted); }
 .three-label.vs-tag.amber { color: var(--amber); border-color: rgba(255, 181, 71, 0.5); }
 
-@media (max-width: 1100px) {
-  .vs-data { grid-template-columns: 1fr; grid-template-rows: minmax(200px, 0.8fr) minmax(0, 1.2fr); }
-  .vs-3d { border-right: 0; border-bottom: 1px solid var(--line); }
-}
 
 /* ---------- Vertex shader: concept ---------- */
-.vsc-hud { position: absolute; left: 14px; right: 14px; top: 12px; display: grid; gap: 8px; justify-items: center; pointer-events: none; }
+.vsc-hud .ms-body { display: grid; gap: 8px; justify-items: center; }
 .vsc-chips { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; }
 .vsc-chip { display: inline-flex; align-items: center; gap: 8px; padding: 4px 10px; border-radius: 99px; border: 1px solid var(--line); background: rgba(5, 6, 13, 0.6); font-size: 12px; color: var(--dim); transition: all 0.3s; }
 .vsc-chip b { color: inherit; font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.08em; font-size: 11px; }
@@ -44,7 +41,7 @@
 .vsc-chip.on { color: var(--muted); border-color: var(--line-strong); }
 .vsc-chip.cur { color: #fff; border-color: var(--magenta); background: rgba(255, 63, 210, 0.16); box-shadow: 0 0 18px rgba(255, 63, 210, 0.4); }
 .vsc-chip.cur .vsc-m { color: var(--magenta); }
-.vsc-opt { display: none; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: center; padding: 6px 10px; border-radius: 10px; background: rgba(5, 6, 13, 0.62); border: 1px solid var(--line); }
+.vsc-opt { display: none; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: center; }
 .vsc-hud[data-step='4'] .vsc-opt { display: flex; }
 .vsc-node { font-family: var(--mono); font-size: 11px; padding: 2px 8px; border-radius: 6px; border: 1px dashed var(--line-strong); color: var(--muted); }
 .vsc-node.on { border-style: solid; border-color: var(--magenta); color: #fff; background: rgba(255, 63, 210, 0.18); }
@@ -52,4 +49,7 @@
 .vsc-node.mesh { border-color: rgba(56, 225, 255, 0.55); color: var(--cyan); }
 .vsc-arrow { color: var(--dim); font-size: 12px; }
 .vsc-sep { width: 1px; height: 16px; background: var(--line-strong); margin: 0 4px; }
-.vsc-caption { position: absolute; left: 16px; right: 16px; bottom: 14px; padding: 10px 14px; border-radius: 10px; background: rgba(5, 6, 13, 0.62); border: 1px solid var(--line); color: var(--muted); font-size: 14px; pointer-events: none; }
+.vsc-cap { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.5; }
+
+/* CSS2D labels sort themselves with z-index; keep them under the glass panels. */
+.slide[data-id='vertex-shader'] .three-labels { z-index: 1; }

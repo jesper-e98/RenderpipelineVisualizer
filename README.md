@@ -24,6 +24,11 @@ for OpenGL, Vulkan and DirectX 12. UI in Swedish and English.*
     följer respektive API:s konventioner (t.ex. z ∈ [−1, 1] i OpenGL, z ∈ [0, 1] och vänd Y i Vulkan).
   - *Koncept* – illustrativa animationer av idén bakom varje steg.
 - **Svenska / engelska** med växlare uppe till höger.
+- **VR och AR (WebXR)** – i en webbläsare med WebXR (t.ex. Meta Quest Browser, eller Chrome på Android för AR)
+  dyker knapparna **VR** och **AR** upp i toppfältet. Då placeras slidens 3D-scen framför dig med en svävande
+  textpanel bredvid. Avtryckaren går till nästa steg, grepp-knappen går tillbaka, tumspaken byter API
+  (vänster/höger) och läge (upp/ned), och knapparna på panelen fungerar med laserpekaren. WebXR kräver https,
+  vilket GitHub Pages har.
 
 ## Kom igång
 

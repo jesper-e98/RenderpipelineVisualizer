@@ -1,10 +1,15 @@
-import { dur, h } from '../core/dom';
+import { Vector3 } from 'three';
+import { SHOWCASE_ROT_Y } from '../core/derived';
+import { h } from '../core/dom';
 import { L } from '../core/i18n';
 import type { ApiId } from '../core/state';
 import { AMBIENT, BASE_COLOR, LIGHT_DIR, SHININESS, VIEW_DIR, dot, normalize, shade } from '../pipeline/shade';
 import type { V3 } from '../pipeline/transform';
-import { PixelCanvas, animateProgress } from '../views/PixelCanvas';
-import { centerFragment, fragCoord, fragCoordName, zoomShowcase } from './14-rasterization';
+import { createModelStage, secs, type ModelStage } from '../views/ModelStage';
+import { PixelCanvas } from '../views/PixelCanvas';
+import { COLORS } from '../views/three-helpers';
+import { stat } from '../views/widgets';
+import { RIG_EYE, centerFragment, fragCoord, fragCoordName, glowDot, linImage, lineSet, loopPts, projectionRig, setLines, vecArrow, zoomShowcase } from './14-rasterization';
 import { standardSlide } from './standard';
 import type { ApiPanelSpec, SlideContext, Visual } from './types';
 import '../styles/slides/fragment-shader.css';
@@ -12,7 +17,17 @@ import '../styles/slides/fragment-shader.css';
 const f3 = (v: number, d = 3) => (Math.abs(v) < 0.5 * 10 ** -d ? 0 : v).toFixed(d);
 const vec = (v: readonly number[], d = 3) => `(${v.map((x) => f3(x, d)).join(', ')})`;
 const rgb = (c: readonly number[]) => `rgb(${c.map((x) => Math.round(Math.min(1, Math.max(0, x)) * 255)).join(',')})`;
-const HALF: V3 = normalize([LIGHT_DIR[0] + VIEW_DIR[0], LIGHT_DIR[1] + VIEW_DIR[1], LIGHT_DIR[2] + VIEW_DIR[2]]);
+const V3of = (v: Vector3): V3 => [v.x, v.y, v.z];
+
+/** Blinn–Phong for normal n and light l, exactly like shade() but with any light direction. */
+function blinnPhong(n: V3, l: V3) {
+  const hv = normalize([l[0] + VIEW_DIR[0], l[1] + VIEW_DIR[1], l[2] + VIEW_DIR[2]]);
+  const diffuse = Math.max(dot(n, l), 0);
+  const nh = Math.max(dot(n, hv), 0);
+  const specular = diffuse > 0 ? Math.pow(nh, SHININESS) : 0;
+  const color = [0, 1, 2].map((i) => Math.min(1, BASE_COLOR[i] * (AMBIENT + diffuse) + specular * 0.8)) as V3;
+  return { h: hv, diffuse, nh, specular, color };
+}
 
 /** A glowing arrow in CSS pixels. */
 function arrow(g: CanvasRenderingContext2D, x: number, y: number, dx: number, dy: number, color: string, label: string) {
@@ -31,21 +46,29 @@ function arrow(g: CanvasRenderingContext2D, x: number, y: number, dx: number, dy
   g.stroke();
   g.beginPath();
   g.moveTo(x2, y2);
-  g.lineTo(x2 - 10 * Math.cos(a - 0.4), y2 - 10 * Math.sin(a - 0.4));
-  g.lineTo(x2 - 10 * Math.cos(a + 0.4), y2 - 10 * Math.sin(a + 0.4));
+  g.lineTo(x2 - 9 * Math.cos(a - 0.4), y2 - 9 * Math.sin(a - 0.4));
+  g.lineTo(x2 - 9 * Math.cos(a + 0.4), y2 - 9 * Math.sin(a + 0.4));
   g.closePath();
   g.fill();
   g.shadowBlur = 0;
-  g.font = '700 13px "JetBrains Mono", monospace';
+  g.font = '700 12px "JetBrains Mono", monospace';
   g.textAlign = 'center';
   g.textBaseline = 'middle';
-  const lx = x2 + Math.cos(a) * 14;
-  const ly = y2 + Math.sin(a) * 14;
+  const lx = x2 + Math.cos(a) * 12;
+  const ly = y2 + Math.sin(a) * 12;
   g.fillStyle = 'rgba(5,6,13,0.75)';
-  g.fillRect(lx - 9, ly - 9, 18, 18);
+  g.fillRect(lx - 8, ly - 8, 16, 16);
   g.fillStyle = color;
   g.fillText(label, lx, ly);
   g.restore();
+}
+
+/** Tween the light direction uniform of a model stage back to the app's fixed light. */
+function restoreLight(ms: ModelStage, animate: boolean) {
+  ms.lightOrbit(false);
+  const u = ms.material.uniforms.uLightDir.value;
+  if (!animate) u.set(...LIGHT_DIR);
+  else ms.tween(u, { x: LIGHT_DIR[0], y: LIGHT_DIR[1], z: LIGHT_DIR[2], duration: secs(animate, 0.8), ease: 'power2.inOut', onUpdate: () => void u.normalize() });
 }
 
 /* ------------------------------------------------------------------ */
@@ -54,45 +77,75 @@ function arrow(g: CanvasRenderingContext2D, x: number, y: number, dx: number, dy
 function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
   const { t } = ctx;
   const api = ctx.state.api;
+  const ms = createModelStage(host, ctx, { autoRotate: 0, shift: -0.12, eye: RIG_EYE, bloom: 0.4, bloomThreshold: 0.93 });
   const z = zoomShowcase(ctx);
-  const canvasHost = h('div.fs-canvas');
-  const side = h('div.fs-side');
-  const root = h('div.fs-root', {}, [canvasHost, side]);
-  host.append(root);
   const frag = z ? centerFragment(z) : null;
   if (!z || !frag) {
-    canvasHost.append(h('div.v-center.hint', { text: t(L('Ingen synlig triangel.', 'No visible triangle.')) }));
-    return { show() {}, destroy() {} };
+    ms.panel(t(L('Fragment shader', 'Fragment shader')), [h('div.hint', { text: t(L('Ingen synlig triangel.', 'No visible triangle.')) })]);
+    return { show() {}, destroy: () => ms.destroy() };
   }
-  const pc = new PixelCanvas(canvasHost, z.cols, z.rows, 14);
+
+  /* ---------- 3D: the followed fragment on the model, with its vectors ---------- */
+  ms.pivot.updateMatrix();
+  const M = ms.pivot.matrix;
+  const vids = ctx.derived.triangleVertices(z.tri);
+  const P = vids.map((i) => new Vector3(...ctx.derived.position(i)));
+  const b = frag.bary;
+  const pWorld = P[0].clone().multiplyScalar(b[0]).addScaledVector(P[1], b[1]).addScaledVector(P[2], b[2]).applyMatrix4(M);
+  const cornersW = P.map((p) => p.clone().applyMatrix4(M));
+  const rot = ms.pivot.quaternion;
+  const cornerN = vids.map((i) => new Vector3(...ctx.derived.normal(i)).applyQuaternion(rot));
+  const raw = frag.attrs as V3;
+  const terms = shade(raw);
+  const nW = new Vector3(...terms.n);
+  const faceN = cornersW[1].clone().sub(cornersW[0]).cross(cornersW[2].clone().sub(cornersW[0])).normalize().multiplyScalar(0.01);
+  const triLine = lineSet(ms.scene, loopPts(cornersW.map((c) => c.clone().add(faceN))), COLORS.cyan, 0.9);
+  const dot3 = glowDot(ms.scene, pWorld.clone().add(faceN), COLORS.white, 0.13);
+  const nArrow = vecArrow(ms.scene, COLORS.magenta, 'N', 'magenta');
+  nArrow.set(pWorld, nW, 0.85);
+  const cornerArrows = cornersW.map((c, i) => {
+    const a = vecArrow(ms.scene, 0xc04fa8, '', 'magenta');
+    a.set(c, cornerN[i], 0.4);
+    return a;
+  });
+  const lArrow = vecArrow(ms.scene, COLORS.amber, 'L', 'amber');
+  const hArrow = vecArrow(ms.scene, COLORS.cyan, 'H', 'cyan');
+  const sunFixed = glowDot(ms.scene, new Vector3(...LIGHT_DIR).multiplyScalar(2.1), 0xfff1c4, 0.5);
+  const lightRay = lineSet(ms.scene, [], COLORS.amber, 0.45);
+  // Step 3: the whole image, every fragment shaded "at once".
   const IW = 160;
   const IH = 100;
   const image = ctx.derived.render(api, IW, IH);
+  const rig = projectionRig(ms, 1.8);
+  const screen = ms.screenPlane(linImage(image.color), IW, IH, rig.w);
+  screen.mesh.position.copy(rig.group.position);
+  screen.mesh.quaternion.copy(rig.group.quaternion);
+  screen.mesh.translateZ(0.002);
+  const { stats } = image;
+
+  /* ---------- Panels ---------- */
+  const numbers = ms.panel('', []);
+  const numHead = numbers.querySelector('.ms-head span')!;
+  const numBody = numbers.querySelector('.ms-body')!;
+  const canvasHost = h('div.fs-zoom');
+  const zoomPanel = ms.panel(t(L(`Närbild · triangel #${z.tri}`, `Close-up · triangle #${z.tri}`)), [canvasHost]);
+  const pc = new PixelCanvas(canvasHost, z.cols, z.rows, 8);
   const view = image.matrices.view.elements;
-  // World direction → on-screen direction (view rotation, then flip y for canvas).
-  const screenDir = (v: V3): [number, number] => {
-    const x = view[0] * v[0] + view[4] * v[1] + view[8] * v[2];
-    const y = view[1] * v[0] + view[5] * v[1] + view[9] * v[2];
-    return [x, -y];
-  };
-  const raw = frag.attrs as V3;
-  const terms = shade(raw);
-  const nh = Math.max(dot(terms.n, HALF), 0);
+  const screenDir = (v: V3): [number, number] => [view[0] * v[0] + view[4] * v[1] + view[8] * v[2], -(view[1] * v[0] + view[5] * v[1] + view[9] * v[2])];
   const shaded = z.frags.map((f) => shade(f.attrs as V3).color);
   const [fx, fy] = fragCoord(api, frag.x + z.x0, frag.y + z.y0, z.fullH);
   const out8 = terms.color.map((c) => Math.round(c * 255));
-  const { stats } = image;
 
   let step = 0;
-  let fill = 1;
-  let cancel: (() => void) | null = null;
+  let light: V3 = [...LIGHT_DIR];
+  let live = blinnPhong(terms.n, light);
 
   const drawCrop = () => {
     pc.clear();
     pc.grid(0.08);
     z.frags.forEach((f, i) => {
       if (step >= 2) pc.fillCell(f.x, f.y, rgb(shaded[i]), 0.04);
-      else pc.fillCell(f.x, f.y, f === frag ? rgb(step === 1 ? terms.color : [0.6, 0.65, 1]) : 'rgba(110,130,220,0.22)', 0.08);
+      else pc.fillCell(f.x, f.y, f === frag ? rgb(step === 1 ? live.color : [0.6, 0.65, 1]) : 'rgba(110,130,220,0.22)', 0.08);
     });
     pc.triangle(z.verts.map((v) => [v.x, v.y] as [number, number]), 'rgba(56,225,255,0.7)', undefined, 1.5, 8);
     const [cx, cy] = pc.px(frag.x + 0.5, frag.y + 0.5);
@@ -104,308 +157,227 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
     g.lineWidth = 2;
     g.strokeRect(cx - pc.cell / 2 - 2, cy - pc.cell / 2 - 2, pc.cell + 4, pc.cell + 4);
     g.restore();
-    const len = Math.min(pc.width, pc.height) * 0.28;
-    const draw = (v: V3, color: string, label: string) => {
+    const len = Math.min(pc.width, pc.height) * 0.3;
+    const draw = (v: V3, color: string, lbl: string) => {
       const [dx, dy] = screenDir(v);
       const l = Math.hypot(dx, dy) || 1;
-      // Keep the on-screen length proportional to how much the vector faces sideways.
       const s = (len * Math.max(0.25, Math.min(1, l))) / l;
-      arrow(g, cx, cy, dx * s, dy * s, color, label);
+      arrow(g, cx, cy, dx * s, dy * s, color, lbl);
     };
     draw(terms.n, '#ff3fd2', 'N');
     if (step >= 1) {
-      draw(LIGHT_DIR, '#ffb547', 'L');
-      draw(HALF, '#38e1ff', 'H');
+      draw(light, '#ffb547', 'L');
+      draw(live.h, '#38e1ff', 'H');
     }
   };
+  pc.onResize(() => step <= 2 && drawCrop());
 
-  const drawImage = () => {
-    pc.clear();
-    pc.grid(0.05);
-    const rows = Math.floor(fill * IH);
-    const px = new Uint8ClampedArray(image.color);
-    for (let y = rows; y < IH; y++)
-      for (let x = 0; x < IW; x++) {
-        const p = (y * IW + x) * 4;
-        px[p] = 6;
-        px[p + 1] = 8;
-        px[p + 2] = 20;
-      }
-    pc.image(px);
-    if (fill < 1) {
-      const [lx, ly] = pc.px(0, rows);
-      const g = pc.ctx;
-      const grad = g.createLinearGradient(0, ly - 18, 0, ly + 4);
-      grad.addColorStop(0, 'rgba(255,63,210,0)');
-      grad.addColorStop(1, 'rgba(255,63,210,0.55)');
-      g.fillStyle = grad;
-      g.fillRect(lx, ly - 18, IW * pc.cell, 20);
-      g.fillStyle = '#fff';
-      g.shadowColor = '#ff3fd2';
-      g.shadowBlur = 16;
-      g.fillRect(lx, ly - 1, IW * pc.cell, 2);
-      g.shadowBlur = 0;
-    }
-  };
-
-  const bar = (label: string, v: number, color: string, text = f3(v)) =>
-    `<div class="fs-bar"><span>${label}</span><i><em style="width:${Math.min(100, v * 100)}%;background:${color};box-shadow:0 0 10px ${color}"></em></i><b>${text}</b></div>`;
+  const bar = (lbl: string, v: number, color: string, text = f3(v)) =>
+    `<div class="fs-bar"><span>${lbl}</span><i><em style="width:${Math.min(100, v * 100)}%;background:${color};box-shadow:0 0 10px ${color}"></em></i><b>${text}</b></div>`;
   const row = (k: string, v: string, cls = '') => `<div class="fs-row"><span>${k}</span><b class="${cls}">${v}</b></div>`;
-
+  const statRow = (items: [string, string, string?][]) => `<div class="stat-row">${items.map(([v, k, c]) => stat(v, k, c ?? '').outerHTML).join('')}</div>`;
+  const titles = [
+    L('Indata till ett fragment', 'Inputs of one fragment'),
+    L('Blinn–Phong, live', 'Blinn–Phong, live'),
+    L('Utdata', 'Output'),
+    L(`Hela bilden @ ${IW}×${IH}`, `Whole image @ ${IW}×${IH}`),
+  ];
   const updateSide = () => {
+    numHead.textContent = t(titles[step]);
     const io = `${fragCoordName(api)} = (${f3(fx, 1)}, ${f3(fy, 1)})`;
+    let html = '';
     if (step === 0) {
-      side.innerHTML = `<h4>${t(L('Indata till ett fragment', 'Inputs of one fragment'))}</h4>
+      const len = Math.hypot(...raw);
+      html = `${statRow([[f3(len), '|vNormal|', Math.abs(len - 1) > 0.001 ? 'glow-amber' : ''], [frag.bary.map((x) => f3(x, 2)).join(' '), 'b0 b1 b2']])}
         <div class="fs-code">${io}</div>
         ${row('vNormal', vec(raw), 'c-nrm')}
-        ${row('|vNormal|', f3(Math.hypot(...raw)), Math.abs(Math.hypot(...raw) - 1) > 0.001 ? 'glow-amber' : '')}
         ${row('n = normalize', vec(terms.n), 'c-nrm')}
-        ${row('b0 b1 b2', frag.bary.map((b) => f3(b, 2)).join(' '))}
-        <p class="fs-note">${t(L('Interpolerade normaler blir kortare än 1 mellan hörnen – därför normaliserar shadern igen.', 'Interpolated normals get shorter than 1 between the corners – that is why the shader normalizes again.'))}</p>`;
+        <p class="fs-note">${t(L('Hörnnormalerna n0–n2 interpoleras till fragmentets N. Mellan hörnen blir den kortare än 1 – därför normaliserar shadern igen. Modellen visar normalen som färg.', 'The vertex normals n0–n2 are interpolated into the fragment\'s N. Between the corners it gets shorter than 1 – that is why the shader normalizes again. The model shows the normal as color.'))}</p>`;
     } else if (step === 1) {
-      side.innerHTML = `<h4>${t(L('Blinn–Phong, steg för steg', 'Blinn–Phong, step by step'))}</h4>
-        ${row('L', vec(LIGHT_DIR), 'glow-amber')}
-        ${row('H', vec(HALF), 'glow-cyan')}
-        ${bar('N·L', terms.diffuse, '#ffb547')}
-        ${bar('N·H', nh, '#38e1ff')}
-        ${bar(`(N·H)<sup>${SHININESS}</sup>`, terms.specular, '#ffffff', terms.specular < 0.001 ? terms.specular.toExponential(1) : f3(terms.specular))}
+      html = `${statRow([[f3(live.diffuse), 'N·L', 'glow-amber'], [f3(live.nh), 'N·H', 'glow-cyan']])}
+        ${row('L', vec(light), 'glow-amber')}
+        ${row('H = norm(L + V)', vec(live.h), 'glow-cyan')}
+        ${bar('N·L', live.diffuse, '#ffb547')}
+        ${bar('N·H', live.nh, '#38e1ff')}
+        ${bar(`(N·H)<sup>${SHININESS}</sup>`, live.specular, '#ffffff', live.specular < 0.001 ? live.specular.toExponential(1) : f3(live.specular))}
         ${bar('ambient', AMBIENT, '#9b7bff', AMBIENT.toFixed(2))}
-        <p class="fs-note">${t(L('V antas vara +Z (riktad betraktare), som i appens shader.', 'V is taken as +Z (directional viewer), as in the app\'s shader.'))}</p>`;
+        <div class="fs-swatch" style="background:${rgb(live.color)}"></div>
+        <p class="fs-note">${t(L('Ljuset kretsar – samma fragment, nya värden varje bildruta. V antas vara +Z, som i appens shader.', 'The light orbits – same fragment, new values every frame. V is taken as +Z, as in the app\'s shader.'))}</p>`;
     } else if (step === 2) {
       const ch = ['R', 'G', 'B'];
       const lines = [0, 1, 2]
         .map((i) => `<div class="fs-eq"><span>${ch[i]}</span>${f3(BASE_COLOR[i], 2)}·(${AMBIENT.toFixed(2)}+${f3(terms.diffuse)}) + ${f3(terms.specular)}·0.8 = <b>${f3(terms.color[i])}</b></div>`)
         .join('');
-      side.innerHTML = `<h4>${t(L('Utdata', 'Output'))}</h4>
-        ${lines}
+      html = `${statRow([[`${out8.join(', ')}`, t(L('RGBA8 (utan A)', 'RGBA8 (no A)')), 'glow-amber'], [String(z.frags.length), t(L('fragment i triangeln', 'fragments in triangle'))]])}
+        <div class="fs-eqs">${lines}</div>
         <div class="fs-swatch" style="background:${rgb(terms.color)};box-shadow:0 0 28px ${rgb(terms.color)}"></div>
-        ${row(api === 'd3d12' ? 'SV_Target0' : 'outColor (location 0)', vec([...terms.color, 1], 2))}
-        ${row(t(L('lagras som RGBA8', 'stored as RGBA8')), `${out8.join(', ')}, 255`, 'glow-amber')}
-        ${row(t(L('fragment i triangeln', 'fragments in triangle')), String(z.frags.length))}`;
+        ${row(api === 'd3d12' ? 'SV_Target0' : 'outColor (location 0)', vec([...terms.color, 1], 2))}`;
     } else {
-      side.innerHTML = `<h4>${t(L(`Hela bilden @ ${IW}×${IH}`, `Whole image @ ${IW}×${IH}`))}</h4>
-        <div class="fs-big glow-magenta">${stats.written.toLocaleString()}</div><div class="fs-cap">${t(L('shader-anrop som skrev en pixel', 'shader invocations that wrote a pixel'))}</div>
+      html = `${statRow([[stats.written.toLocaleString(), t(L('shader-anrop som skrev', 'invocations that wrote')), 'glow-magenta'], [stats.depthRejected.toLocaleString(), t(L('kastade av djuptest', 'rejected by depth test')), 'rz-neg']])}
         ${row(t(L('fragment från rasteriseraren', 'fragments from the rasterizer')), stats.fragments.toLocaleString())}
-        ${row(t(L('bortsorterade av djuptest', 'rejected by depth test')), stats.depthRejected.toLocaleString(), 'rz-neg')}
-        ${row(t(L('≈ vid 1920×1080', '≈ at 1920×1080')), Math.round((stats.written * 1920 * 1080) / (IW * IH)).toLocaleString())}
-        <p class="fs-note">${t(L('Med <i>early-Z</i> testas djupet före shadern, så skymda fragment aldrig behöver skuggas.', 'With <i>early-Z</i>, depth is tested before the shader, so hidden fragments never need shading.'))}</p>`;
+        ${row(t(L('≈ anrop vid 1920×1080', '≈ invocations at 1920×1080')), Math.round((stats.written * 1920 * 1080) / (IW * IH)).toLocaleString())}
+        <p class="fs-note">${t(L('Bilden framför modellen fylls i slumpvis ordning – alla fragment kör samma program, parallellt. Med <i>early-Z</i> testas djupet före shadern, så skymda fragment aldrig behöver skuggas.', 'The image in front of the model fills in random order – every fragment runs the same program, in parallel. With <i>early-Z</i>, depth is tested before the shader, so hidden fragments never need shading.'))}</p>`;
     }
+    numBody.innerHTML = html;
   };
 
-  const redraw = () => {
-    if (step === 3) drawImage();
-    else drawCrop();
+  const aimLight = () => {
+    const lv = new Vector3(...light);
+    lArrow.set(pWorld, lv, 0.8);
+    hArrow.set(pWorld, new Vector3(...live.h), 0.8);
+    setLines(lightRay, step >= 1 && step <= 2 ? [pWorld, pWorld.clone().addScaledVector(lv, 1.9)] : []);
   };
-  pc.onResize(redraw);
+  let frameNo = 0;
+  ms.onFrame(() => {
+    if (step !== 1) return;
+    const u = ms.material.uniforms.uLightDir.value;
+    light = [u.x, u.y, u.z];
+    live = blinnPhong(terms.n, light);
+    aimLight();
+    if (++frameNo % 5 === 0) {
+      drawCrop();
+      updateSide();
+    }
+  });
 
   return {
     show(s, animate) {
-      cancel?.();
-      cancel = null;
       step = s;
-      fill = 1;
-      const cols = s === 3 ? IW : z.cols;
-      if (pc.cols !== cols) {
-        pc.cols = cols;
-        pc.rows = s === 3 ? IH : z.rows;
-        pc.resize();
+      const fixed = s !== 1;
+      if (fixed) {
+        restoreLight(ms, animate && s === 2);
+        light = [...LIGHT_DIR];
+        live = blinnPhong(terms.n, light);
+      } else ms.lightOrbit(true);
+      // Model look: the interpolated normal as color (0), lit (1), shading sweeping over it (2), lit (3).
+      if (s === 0) ms.setMode('normals', 1, secs(animate, 0.6));
+      else if (s === 2) ms.sweep('shaded', 'normals', secs(animate, 2.4));
+      else ms.setMode('shaded', 0, secs(animate, 0.6));
+      ms.setLayer('wire', s === 0 ? 0.08 : 0, secs(animate, 0.4));
+      triLine.visible = dot3.visible = nArrow.visible = s <= 2;
+      cornerArrows.forEach((a) => (a.visible = s === 0));
+      lArrow.visible = hArrow.visible = lightRay.visible = s === 1 || s === 2;
+      sunFixed.visible = s === 2;
+      rig.group.visible = screen.mesh.visible = s === 3;
+      if (s === 3) {
+        screen.reveal(animate ? 0 : 1, 0);
+        if (animate) screen.reveal(1, secs(animate, 2.4));
       }
-      if (animate && s === 3) {
-        fill = 0;
-        cancel = animateProgress(dur(2.2), (p) => {
-          fill = p;
-          redraw();
-        });
-      }
-      redraw();
+      zoomPanel.style.display = s <= 2 ? '' : 'none';
+      aimLight();
+      if (s <= 2) drawCrop();
       updateSide();
-      if (animate) side.animate([{ opacity: 0, transform: 'translateX(10px)' }, { opacity: 1, transform: 'none' }], { duration: dur(0.4) * 1000, easing: 'ease-out' });
     },
     destroy() {
-      cancel?.();
       pc.destroy();
+      ms.destroy();
     },
   };
 }
 
 /* ------------------------------------------------------------------ */
-/* Concept: an orbiting light painting a sphere of fragments           */
+/* Concept: the spinning model, an orbiting light, shading spreading   */
 /* ------------------------------------------------------------------ */
 function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
   const { t } = ctx;
-  const canvas = h('canvas.v-fill');
-  const caption = h('div.fs-caption');
-  host.append(canvas, caption);
-  const g = canvas.getContext('2d')!;
-  let W = 0;
-  let H = 0;
-  let cx = 0;
-  let cy = 0;
-  let R = 100;
-  let cell = 10;
-  let cells: { x: number; y: number; n: V3; d: number }[] = [];
-  const resize = () => {
-    const dpr = Math.min(devicePixelRatio || 1, 2);
-    W = host.clientWidth;
-    H = host.clientHeight;
-    canvas.width = Math.round(W * dpr);
-    canvas.height = Math.round(H * dpr);
-    g.setTransform(dpr, 0, 0, dpr, 0, 0);
-    R = Math.max(40, Math.min(W * 0.26, (H - 70) * 0.44));
-    cx = W / 2;
-    cy = (H - 50) / 2 + 6;
-    cell = Math.max(6, Math.round(R / 11));
-    cells = [];
-    const n = Math.ceil(R / cell);
-    for (let j = -n; j < n; j++)
-      for (let i = -n; i < n; i++) {
-        const x = (i + 0.5) * cell;
-        const y = (j + 0.5) * cell;
-        const r2 = (x * x + y * y) / (R * R);
-        if (r2 > 1) continue;
-        const nz = Math.sqrt(1 - r2);
-        cells.push({ x: cx + i * cell, y: cy + j * cell, n: [x / R, -y / R, nz], d: Math.hypot(i + 0.5 + 3, j + 0.5 + 4) });
-      }
-  };
-  const ro = new ResizeObserver(resize);
-  ro.observe(host);
-  resize();
+  const api = ctx.state.api;
+  const ms = createModelStage(host, ctx, { autoRotate: 0, eye: [1.5, 1.25, 3.7], bloom: 0.45, bloomThreshold: 0.93 });
+  const tri = ctx.derived.showcaseTriangle(api);
+  const vids = ctx.derived.triangleVertices(tri);
+  const P = vids.map((i) => new Vector3(...ctx.derived.position(i)));
+  const Nn = vids.map((i) => new Vector3(...ctx.derived.normal(i)));
+  // A point inside the triangle, in model space (it spins with the model).
+  const pModel = P[0].clone().add(P[1]).add(P[2]).multiplyScalar(1 / 3);
+  const nModel = Nn[0].clone().add(Nn[1]).add(Nn[2]).normalize();
+  const dotM = glowDot(ms.pivot, pModel.clone().addScaledVector(nModel, 0.01), COLORS.white, 0.12);
+  const nArrow = vecArrow(ms.pivot, COLORS.magenta, 'N', 'magenta');
+  nArrow.set(pModel, nModel, 0.55);
+  const lArrow = vecArrow(ms.scene, COLORS.amber, 'L', 'amber');
+  const hArrow = vecArrow(ms.scene, COLORS.cyan, 'H', 'cyan');
+  const lightRay = lineSet(ms.scene, [], COLORS.amber, 0.4);
+  const IW = 160;
+  const IH = 100;
+  const image = ctx.derived.render(api, IW, IH);
+  const rig = projectionRig(ms, 1.8);
+  const screen = ms.screenPlane(linImage(image.color), IW, IH, rig.w);
+  screen.mesh.position.copy(rig.group.position);
+  screen.mesh.quaternion.copy(rig.group.quaternion);
+  screen.mesh.translateZ(0.002);
+
+  const readout = h('div.stat-row');
+  const swatch = h('div.fs-swatch');
+  const livePanel = ms.panel(t(L('Ett fragment', 'One fragment')), [readout, swatch]);
+  const caption = ms.panel(t(L('Vad händer', 'What happens')), [h('p.fs-capt')], { side: 'bottom' });
+  const text = caption.querySelector('.fs-capt')!;
+  const captions = [
+    L('Varje fragment har sin egen interpolerade normal <b style="color:var(--magenta)">N</b> – här som färg på modellen, och som igelkott.', 'Each fragment has its own interpolated normal <b style="color:var(--magenta)">N</b> – shown as color on the model, and as a hedgehog.'),
+    L('Ljuset kretsar. Ljusstyrkan följer <b style="color:var(--amber)">N·L</b>; högdagern följer <b style="color:var(--cyan)">N·H</b> upphöjt till 48.', 'The light orbits. Brightness follows <b style="color:var(--amber)">N·L</b>; the highlight follows <b style="color:var(--cyan)">N·H</b> raised to 48.'),
+    L('Shadern körs en gång per fragment och "målar" det – skuggningen sprider sig över modellen, fragment för fragment.', 'The shader runs once per fragment and "paints" it – the shading spreads over the model, fragment by fragment.'),
+    L('Alla fragment kör <b>samma program</b> samtidigt, i tusentals trådar – bilden framför modellen fylls i godtycklig ordning.', 'All fragments run <b>the same program</b> at once, in thousands of threads – the image in front of the model fills in any order.'),
+  ];
 
   let step = 0;
-  let t0 = performance.now();
-  let raf = 0;
-  const pick = () => cells.reduce((a, c) => (Math.hypot(c.n[0] - 0.3, c.n[1] - 0.22) < Math.hypot(a.n[0] - 0.3, a.n[1] - 0.22) ? c : a), cells[0]);
-
-  const frame = (now: number) => {
-    raf = requestAnimationFrame(frame);
-    const tt = Math.max(0, (now - t0) / 1000); // rAF time can precede t0
-    g.clearRect(0, 0, W, H);
-    if (!cells.length) return;
-    const a = step === 0 ? 2.3 : tt * 0.7 + 2.3;
-    const Ld = normalize([Math.cos(a), 0.55, Math.sin(a) * 0.9 + 0.35]);
-    const Hd = normalize([Ld[0], Ld[1], Ld[2] + 1]);
-    const lightX = cx + Ld[0] * R * 1.75;
-    const lightY = cy - Ld[1] * R * 1.45;
-    const front = Ld[2] > -0.1;
-    const sel = pick();
-
-    // Light source glow (drawn behind the sphere when it is behind it).
-    const drawLight = () => {
-      const s = 10 + 6 * Math.max(0, Ld[2]);
-      const grad = g.createRadialGradient(lightX, lightY, 0, lightX, lightY, s * 4);
-      grad.addColorStop(0, 'rgba(255,240,200,1)');
-      grad.addColorStop(0.25, 'rgba(255,181,71,0.65)');
-      grad.addColorStop(1, 'rgba(255,181,71,0)');
-      g.fillStyle = grad;
-      g.beginPath();
-      g.arc(lightX, lightY, s * 4, 0, Math.PI * 2);
-      g.fill();
-    };
-    if (step >= 1 && !front) drawLight();
-
-    // Rays painting fragments (step 2): a wave of rays sweeps over the cells, cell by cell.
-    const paintT = step === 2 ? (tt % 5.5) / 4 : 2;
-    cells.forEach((c) => {
-      let col: V3 | null = null;
-      if (step === 1 || step >= 3 || (step === 2 && c.d / (R / cell + 6) < paintT)) {
-        const diff = Math.max(dot(c.n, Ld), 0);
-        const spec = diff > 0 ? Math.pow(Math.max(dot(c.n, Hd), 0), SHININESS) : 0;
-        col = [0, 1, 2].map((k) => Math.min(1, BASE_COLOR[k] * (AMBIENT + diff) + spec * 0.8)) as V3;
-      }
-      g.fillStyle = col ? rgb(col) : 'rgba(110,130,220,0.16)';
-      g.fillRect(c.x + 1, c.y + 1, cell - 2, cell - 2);
-      if (step === 0 && !col) {
-        // Tiny normal "hedgehog".
-        g.strokeStyle = 'rgba(255,63,210,0.45)';
-        g.lineWidth = 1;
-        g.beginPath();
-        g.moveTo(c.x + cell / 2, c.y + cell / 2);
-        g.lineTo(c.x + cell / 2 + c.n[0] * cell * 0.9, c.y + cell / 2 - c.n[1] * cell * 0.9);
-        g.stroke();
-      }
-    });
-    if (step === 2) {
-      // Rays from the light to the cells on the painting front.
-      g.save();
-      g.globalCompositeOperation = 'lighter';
-      const front2 = cells.filter((c) => Math.abs(c.d / (R / cell + 6) - paintT) < 0.03);
-      front2.slice(0, 40).forEach((c) => {
-        const grad = g.createLinearGradient(lightX, lightY, c.x + cell / 2, c.y + cell / 2);
-        grad.addColorStop(0, 'rgba(255,220,150,0.5)');
-        grad.addColorStop(1, 'rgba(255,181,71,0.05)');
-        g.strokeStyle = grad;
-        g.lineWidth = 1.5;
-        g.beginPath();
-        g.moveTo(lightX, lightY);
-        g.lineTo(c.x + cell / 2, c.y + cell / 2);
-        g.stroke();
-      });
-      g.restore();
-    }
-    if (step >= 1 && front) drawLight();
-
-    // The followed fragment and its vectors.
-    if (step <= 1) {
-      const px = sel.x + cell / 2;
-      const py = sel.y + cell / 2;
-      g.save();
-      g.strokeStyle = '#fff';
-      g.shadowColor = '#fff';
-      g.shadowBlur = 12;
-      g.lineWidth = 2;
-      g.strokeRect(sel.x - 1, sel.y - 1, cell + 2, cell + 2);
-      g.restore();
-      const len = R * 0.75;
-      arrow(g, px, py, sel.n[0] * len, -sel.n[1] * len, '#ff3fd2', 'N');
-      if (step === 1) {
-        arrow(g, px, py, Ld[0] * len, -Ld[1] * len, '#ffb547', 'L');
-        arrow(g, px, py, Hd[0] * len, -Hd[1] * len, '#38e1ff', 'H');
-        const nl = Math.max(dot(sel.n, Ld), 0);
-        const sp = nl > 0 ? Math.pow(Math.max(dot(sel.n, Hd), 0), SHININESS) : 0;
-        const tx = Math.min(W - 170, cx + R + 30);
-        g.save();
-        g.fillStyle = 'rgba(5,6,13,0.8)';
-        g.strokeStyle = 'rgba(140,160,255,0.3)';
-        g.fillRect(tx, cy - 48, 150, 82);
-        g.strokeRect(tx + 0.5, cy - 47.5, 150, 82);
-        g.font = '600 12px "JetBrains Mono", monospace';
-        g.fillStyle = '#ffb547';
-        g.fillText(`N·L  = ${nl.toFixed(3)}`, tx + 10, cy - 28);
-        g.fillStyle = '#38e1ff';
-        g.fillText(`spec = ${sp.toFixed(3)}`, tx + 10, cy - 8);
-        const col = [0, 1, 2].map((k) => Math.min(1, BASE_COLOR[k] * (AMBIENT + nl) + sp * 0.8));
-        g.fillStyle = rgb(col);
-        g.fillRect(tx + 10, cy + 6, 130, 18);
-        g.restore();
-      }
-    }
+  let spin = true;
+  let lastSweep = -10;
+  let frameNo = 0;
+  const pw = new Vector3();
+  const nw = new Vector3();
+  let now = 0;
+  let t3 = 0;
+  ms.onFrame((time, dt) => {
+    now = time;
     if (step === 3) {
-      g.save();
-      g.font = '600 12px "JetBrains Mono", monospace';
-      g.fillStyle = 'rgba(232,235,255,0.75)';
-      g.textAlign = 'center';
-      g.fillText(`${cells.length} ${t(L('fragment · samma program · parallellt', 'fragments · same program · in parallel'))}`, cx, cy + R + 22);
-      g.restore();
+      screen.reveal(Math.min(1, ((time - t3) % 3.6) / 2.6), 0);
+      return;
     }
-  };
-  raf = requestAnimationFrame(frame);
+    if (spin) ms.pivot.rotation.y += dt * 0.3;
+    if (step === 2 && time - lastSweep > 3.6) {
+      lastSweep = time;
+      ms.sweep('shaded', 'normals', 2.4);
+    }
+    if (step === 1 || step === 2) {
+      ms.pivot.updateMatrix();
+      pw.copy(pModel).applyMatrix4(ms.pivot.matrix);
+      nw.copy(nModel).applyQuaternion(ms.pivot.quaternion);
+      const u = ms.material.uniforms.uLightDir.value;
+      const r = blinnPhong(V3of(nw), [u.x, u.y, u.z]);
+      lArrow.set(pw, u, 0.55);
+      hArrow.set(pw, new Vector3(...r.h), 0.55);
+      setLines(lightRay, [pw, pw.clone().addScaledVector(u, 1.9)]);
+      if (++frameNo % 5 === 0) {
+        readout.innerHTML = [stat(f3(r.diffuse), 'N·L', 'glow-amber'), stat(r.specular < 0.001 ? r.specular.toExponential(1) : f3(r.specular), `(N·H)^${SHININESS}`, 'glow-cyan')].map((e) => e.outerHTML).join('');
+        swatch.style.background = rgb(r.color);
+      }
+    }
+  });
 
-  const captions = [
-    L('Varje ruta är ett fragment med sin egen interpolerade normal <b style="color:var(--magenta)">N</b>.', 'Each square is a fragment with its own interpolated normal <b style="color:var(--magenta)">N</b>.'),
-    L('Ljuset kretsar. Ljusstyrkan följer <b style="color:var(--amber)">N·L</b>; högdagern följer <b style="color:var(--cyan)">N·H</b> upphöjt till 48.', 'The light orbits. Brightness follows <b style="color:var(--amber)">N·L</b>; the highlight follows <b style="color:var(--cyan)">N·H</b> raised to 48.'),
-    L('Shadern körs en gång per fragment och "målar" det med sin färg.', 'The shader runs once per fragment and "paints" it with its color.'),
-    L('Alla fragment kör <b>samma program</b> samtidigt, i tusentals trådar på GPU:n.', 'All fragments run <b>the same program</b> at once, in thousands of GPU threads.'),
-  ];
   return {
     show(s, animate) {
       step = s;
-      t0 = performance.now();
-      caption.innerHTML = t(captions[s]);
-      if (animate) caption.animate([{ opacity: 0, transform: 'translateY(8px)' }, { opacity: 1, transform: 'none' }], { duration: dur(0.4) * 1000, easing: 'ease-out' });
+      t3 = now;
+      text.innerHTML = t(captions[s]);
+      if (animate) caption.animate([{ opacity: 0.3 }, { opacity: 1 }], { duration: secs(animate, 0.4) * 1000 });
+      spin = s <= 2;
+      if (s === 3) {
+        if (animate) ms.tween(ms.pivot.rotation, { y: SHOWCASE_ROT_Y + Math.round((ms.pivot.rotation.y - SHOWCASE_ROT_Y) / (Math.PI * 2)) * Math.PI * 2, duration: 0.9, ease: 'power2.inOut' });
+        else ms.pivot.rotation.y = SHOWCASE_ROT_Y;
+        restoreLight(ms, animate);
+        screen.reveal(animate ? 0 : 1, 0);
+      } else if (s >= 1) ms.lightOrbit(true);
+      else restoreLight(ms, false);
+      if (s === 0) ms.setMode('normals', 1, secs(animate, 0.6));
+      else if (s === 2) {
+        lastSweep = -10;
+        if (!animate) ms.setMode('shaded', 0, 0);
+      } else ms.setMode('shaded', 0, secs(animate, 0.6));
+      ms.setLayer('normals', s === 0 ? 0.55 : 0, secs(animate, 0.5));
+      dotM.visible = nArrow.visible = s <= 2;
+      lArrow.visible = hArrow.visible = lightRay.visible = s === 1 || s === 2;
+      livePanel.style.display = s === 1 || s === 2 ? '' : 'none';
+      rig.group.visible = screen.mesh.visible = s === 3;
     },
     destroy() {
-      cancelAnimationFrame(raf);
-      ro.disconnect();
+      ms.destroy();
     },
   };
 }
