@@ -31,6 +31,10 @@ export const UI = {
   fileSize: L('Filstorlek', 'File size'),
   loading: L('Laddar modell…', 'Loading model…'),
   loadError: L('Kunde inte ladda filen', 'Could not load the file'),
+  blendHint: L(
+    '.blend-filer kan inte läsas i webbläsaren. Öppna filen i Blender och välj File → Export → glTF 2.0 (.glb), och dra sedan in .glb-filen här.',
+    '.blend files can\'t be read in the browser. Open the file in Blender, choose File → Export → glTF 2.0 (.glb), then drop the .glb file here.',
+  ),
   youWrite: L('Du skriver', 'You write'),
   driverDoes: L('Drivrutinen gör', 'The driver does'),
   gpuDoes: L('GPU:n gör', 'The GPU does'),
@@ -39,6 +43,7 @@ export const UI = {
   stageGpuProg: L('GPU – programmerbar', 'GPU – programmable'),
   stageGpuFixed: L('GPU – fast funktion', 'GPU – fixed function'),
   code: L('Kod', 'Code'),
+  hideCode: L('Dölj kod', 'Hide code'),
   terms: L('Begrepp', 'Terms'),
   keysHint: L('← → bläddra · M byt läge · 1/2/3 byt API', '← → navigate · M switch mode · 1/2/3 switch API'),
 };

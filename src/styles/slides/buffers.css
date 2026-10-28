@@ -1,0 +1,53 @@
+/* ---------- 04 Buffers ---------- */
+.bf-root { position: absolute; inset: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 8px; padding: 10px 12px; }
+.bf-stats .stat { padding: 6px 10px; }
+.bf-stats .stat .v { font-size: 17px; }
+.bf-stats .stat .k { font-size: 10px; }
+.bf-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(120px, 0.62fr) minmax(0, 1fr); gap: 10px; min-height: 0; }
+.bf-col { position: relative; display: flex; flex-direction: column; gap: 5px; min-height: 0; overflow: hidden; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line); background: rgba(8, 10, 24, 0.55); transition: border-color 0.4s, box-shadow 0.4s, opacity 0.4s; }
+.bf-col.cur { border-color: color-mix(in srgb, var(--cc) 60%, transparent); box-shadow: 0 0 24px color-mix(in srgb, var(--cc) 22%, transparent), inset 0 0 30px color-mix(in srgb, var(--cc) 6%, transparent); }
+.bf-ram { --cc: var(--cyan); }
+.bf-vram { --cc: var(--magenta); }
+.bf-pcie { --cc: var(--amber); justify-content: space-between; }
+.bf-col-title { display: flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase; color: var(--cc); flex-wrap: wrap; }
+.bf-col-title .bf-flags { margin-left: auto; text-transform: none; letter-spacing: 0; font-weight: 500; }
+.bf-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--cc); box-shadow: 0 0 10px var(--cc); }
+.bf-flags { font-size: 10.5px; color: var(--muted); }
+.bf-buf { display: grid; gap: 3px; transition: opacity 0.4s; }
+.bf-buf-head { display: flex; justify-content: space-between; gap: 8px; font-size: 11.5px; color: var(--muted); }
+.bf-buf-head b { color: var(--text); font-size: 12px; }
+.bf-buf-sub { font-size: 10.5px; color: var(--dim); font-family: var(--mono); }
+.bf-track { position: relative; height: 12px; border-radius: 4px; background: rgba(255, 255, 255, 0.04); overflow: hidden; }
+.bf-track i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 4px; }
+.bf-fill { transform-origin: left; transition: transform 0.01s; }
+.bf-buf.vb .bf-fill { background: linear-gradient(90deg, rgba(56, 225, 255, 0.45), var(--cyan)); box-shadow: 0 0 12px var(--cyan); }
+.bf-buf.ib .bf-fill { background: linear-gradient(90deg, rgba(92, 240, 143, 0.45), var(--green)); box-shadow: 0 0 12px var(--green); }
+.bf-pad { background: repeating-linear-gradient(135deg, rgba(255, 63, 210, 0.28) 0 5px, rgba(255, 63, 210, 0.06) 5px 10px); border: 1px dashed rgba(255, 63, 210, 0.6); transition: opacity 0.4s; }
+.bf-vram .bf-track { outline: 1px dashed rgba(255, 63, 210, 0.35); }
+.bf-hex-wrap { display: grid; gap: 3px; }
+.bf-hex-k { font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--dim); }
+.bf-hex { display: flex; flex-wrap: wrap; gap: 2px; font-family: var(--mono); font-size: 10.5px; }
+.bf-hex .mem-cell { min-width: 19px; }
+.bf-staging { display: grid; gap: 2px; padding: 5px 9px; border-radius: 9px; border: 1px solid color-mix(in srgb, var(--api) 55%, transparent); background: color-mix(in srgb, var(--api) 8%, transparent); transition: opacity 0.4s; }
+.bf-tag { font-size: 11.5px; font-weight: 700; color: var(--api); }
+.bf-track.st { height: 8px; }
+.bf-fill.st { background: linear-gradient(90deg, color-mix(in srgb, var(--api) 30%, transparent), var(--api)); box-shadow: 0 0 10px var(--api); }
+.bf-lane-host { flex: 1; min-height: 50px; position: relative; }
+.bf-lanes { position: absolute; inset: 0; width: 100%; height: 100%; }
+.bf-lane { stroke: rgba(255, 181, 71, 0.55); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.bf-pcie.live .bf-lane { stroke: var(--amber); stroke-dasharray: 8 10; animation: bf-flow 0.5s linear infinite; filter: drop-shadow(0 0 4px var(--amber)); }
+@keyframes bf-flow { to { stroke-dashoffset: -18; } }
+.bf-speed { display: grid; gap: 2px; text-align: center; font-size: 11px; color: var(--muted); }
+.bf-time { font-family: var(--mono); font-size: 20px; font-weight: 800; }
+.bf-rule { font-size: 10.5px; color: var(--muted); line-height: 1.4; }
+.bf-states { display: grid; gap: 4px; margin-top: auto; }
+.bf-state { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; padding: 3px 8px; border-radius: 8px; border: 1px solid rgba(92, 240, 143, 0.5); background: rgba(92, 240, 143, 0.08); box-shadow: 0 0 16px rgba(92, 240, 143, 0.15); transition: opacity 0.4s; }
+.bf-state .mono { font-size: 10.5px; color: var(--green); overflow-wrap: anywhere; }
+.bf-state small { font-size: 10px; color: var(--muted); }
+.bf-vram.ready { border-color: rgba(92, 240, 143, 0.6); }
+.bf-root .off { opacity: 0.12; }
+.bf-col.off { opacity: 0.25; }
+@media (prefers-reduced-motion: reduce) { .bf-pcie.live .bf-lane { animation: none; } }
+
+.bf-concept .bf-canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.bf-caption { position: absolute; left: 16px; right: 16px; bottom: 12px; padding: 9px 14px; border-radius: 10px; background: rgba(5, 6, 13, 0.6); border: 1px solid var(--line); color: var(--muted); font-size: 13.5px; }

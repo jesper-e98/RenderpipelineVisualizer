@@ -1,0 +1,25 @@
+/* ---------- 01 Overview ---------- */
+.ov-data .flow { padding: 6px; }
+.ov-data .ov-lane-title { font-family: var(--sans); font-size: 11px; font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase; }
+.ov-data .ov-lane rect { transition: fill-opacity 0.3s, stroke-opacity 0.3s; }
+.ov-data .ov-lane.cur rect { fill-opacity: 0.1; stroke-opacity: 0.6; }
+.ov-data .node.ov-click { cursor: pointer; }
+.ov-data .node.ov-click rect { transition: fill 0.2s, stroke-width 0.2s; }
+.ov-data .node.ov-click:hover rect { fill: rgba(40, 48, 100, 0.95); stroke-width: 2.4; }
+.ov-data .node.dim { filter: saturate(0.6) brightness(0.8); }
+.ov-data .edge-g.dim .edge { opacity: 0.5; }
+.ov-data .ov-screen-frame { fill: #04060f; stroke: var(--amber); stroke-width: 1.5; filter: drop-shadow(0 0 10px var(--amber)); }
+.ov-data .ov-screen-label { fill: var(--muted); font-family: var(--mono); font-size: 10.5px; }
+
+.ov-concept .ov-canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.ov-overlay { position: absolute; inset: 0; pointer-events: none; }
+.ov-zone-cap { position: absolute; display: flex; flex-wrap: wrap; align-content: flex-start; column-gap: 8px; row-gap: 1px; padding: 8px 10px; border-radius: 12px; border: 1px solid var(--line); background: rgba(5, 6, 13, 0.55); backdrop-filter: blur(6px); opacity: 0.3; transition: opacity 0.35s, border-color 0.35s, box-shadow 0.35s; pointer-events: auto; }
+.ov-zone-cap.on { opacity: 0.8; }
+.ov-zone-cap.cur { opacity: 1; border-color: var(--line-strong); box-shadow: 0 0 24px rgba(155, 123, 255, 0.18); }
+.ov-zone-title { flex: 0 0 100%; font-size: 10.5px; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 3px; line-height: 1.3; }
+.ov-stage { text-align: left; border: 0; background: none; padding: 1px 0; font-size: 12px; font-weight: 600; white-space: nowrap; opacity: 0.9; }
+.ov-stage::before { content: '▸'; margin-right: 3px; opacity: 0.6; }
+.ov-stage:hover { opacity: 1; text-decoration: underline; text-shadow: 0 0 10px currentColor; }
+.ov-screen-cap { position: absolute; text-align: center; font-size: 11px; font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase; color: var(--dim); transition: color 0.3s; }
+.ov-screen-cap.on { color: var(--amber); text-shadow: 0 0 12px rgba(255, 181, 71, 0.6); }
+.ov-caption { position: absolute; left: 16px; right: 16px; bottom: 14px; padding: 10px 14px; border-radius: 10px; background: rgba(5, 6, 13, 0.6); border: 1px solid var(--line); color: var(--muted); font-size: 14px; }

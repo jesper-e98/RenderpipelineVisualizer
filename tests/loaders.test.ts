@@ -29,3 +29,10 @@ describe('file loaders', () => {
     await expect(parseModel('x.fbx', new ArrayBuffer(4))).rejects.toThrow(/Unsupported/);
   });
 });
+
+describe('blend files', () => {
+  it('explains that .blend must be exported first', async () => {
+    const { BlendFileError } = await import('../src/model/loadModel');
+    await expect(parseModel('scene.blend', new ArrayBuffer(4))).rejects.toBeInstanceOf(BlendFileError);
+  });
+});
