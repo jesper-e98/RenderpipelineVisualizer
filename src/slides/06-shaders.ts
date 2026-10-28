@@ -183,29 +183,32 @@ define void @main() {
 function isaExcerpt(): string {
   const [lx, ly, lz] = LIGHT_DIR.map(f32hex);
   const [hx, hy, hz] = HALF.map(f32hex);
-  return `v_mul_f32     v3, v0, v0              ; |n|² = n·n
-v_fmac_f32    v3, v1, v1
-v_fmac_f32    v3, v2, v2
-v_rsq_f32     v3, v3                  ; 1/|n|
-v_mul_f32     v0, v0, v3              ; n = normalize(n)
-v_mul_f32     v1, v1, v3
-v_mul_f32     v2, v2, v3
-v_mul_f32     v4, ${lx}, v0     ; dot(n, LIGHT_DIR)
-v_fmac_f32    v4, ${ly}, v1     ;   literals = LIGHT_DIR
-v_fmac_f32    v4, ${lz}, v2
-v_max_f32     v4, 0, v4               ; diff
-v_mul_f32     v5, ${hx}, v0     ; dot(n, h)
-v_fmac_f32    v5, ${hy}, v1
-v_fmac_f32    v5, ${hz}, v2
-v_max_f32     v5, 0, v5
-v_log_f32     v5, v5                  ; pow(x, 48) =
-v_mul_f32     v5, ${f32hex(SHININESS)}, v5     ;   exp2(48 · log2 x)
-v_exp_f32     v5, v5
-v_cmp_lt_f32  vcc_lo, 0, v4           ; diff > 0 ?
-v_cndmask_b32 v5, 0, v5, vcc_lo
-; … BASE * (${AMBIENT} + diff) + spec·0.8, v_min_f32 …
-exp           mrt0, v6, v7, v8, v9 done
-s_endpgm`;
+  const rows: [string, string?][] = [
+    ['v_mul_f32     v3, v0, v0', '|n|² = n·n'],
+    ['v_fmac_f32    v3, v1, v1'],
+    ['v_fmac_f32    v3, v2, v2'],
+    ['v_rsq_f32     v3, v3', '1/|n|'],
+    ['v_mul_f32     v0, v0, v3', 'n = normalize(n)'],
+    ['v_mul_f32     v1, v1, v3'],
+    ['v_mul_f32     v2, v2, v3'],
+    [`v_mul_f32     v4, ${lx}, v0`, 'dot(n, LIGHT_DIR):'],
+    [`v_fmac_f32    v4, ${ly}, v1`, '  LIGHT_DIR baked in'],
+    [`v_fmac_f32    v4, ${lz}, v2`, '  as float literals'],
+    ['v_max_f32     v4, 0, v4', 'diff'],
+    [`v_mul_f32     v5, ${hx}, v0`, 'dot(n, h)'],
+    [`v_fmac_f32    v5, ${hy}, v1`],
+    [`v_fmac_f32    v5, ${hz}, v2`],
+    ['v_max_f32     v5, 0, v5'],
+    ['v_log_f32     v5, v5', `pow(x, ${SHININESS}) =`],
+    [`v_mul_f32     v5, ${f32hex(SHININESS)}, v5`, `  exp2(${SHININESS} · log2 x)`],
+    ['v_exp_f32     v5, v5'],
+    ['v_cmp_lt_f32  vcc_lo, 0, v4', 'diff > 0 ?'],
+    ['v_cndmask_b32 v5, 0, v5, vcc_lo', '  spec : 0'],
+    ['', `… BASE·(${AMBIENT} + diff) + spec·0.8, v_min_f32 …`],
+    ['exp           mrt0, v6, v7, v8, v9 done', 'write SV_Target / outColor'],
+    ['s_endpgm'],
+  ];
+  return rows.map(([c, cm]) => (cm ? `${c.padEnd(34)}; ${cm}` : c)).join('\n');
 }
 
 /* ------------------------------------------------------------------ */
@@ -245,6 +248,9 @@ function hexOf(str: string): string {
   const w = (x >>> 0).toString(16).padStart(8, '0');
   return `${w.slice(0, 4)} ${w.slice(4)} · ${str.split(' ')[0]}`;
 }
+
+/** Allow long camelCase API names to wrap between words. */
+const breakable = (s: string) => s.replace(/([a-z])([A-Z])/g, '$1\u200b$2');
 
 const lineCount = (s: string) => s.split('\n').length;
 const byteCount = (s: string) => new TextEncoder().encode(s).length;
@@ -289,7 +295,7 @@ const LIT_UPTO = [0, 1, 2, 4];
 function chainStrip(api: ApiId, t: SlideContext['t']): { el: HTMLElement; set: (step: number, animate: boolean) => void } {
   const nodes = chain(api, t);
   const nodeEls = nodes.map((n, i) =>
-    h('div.sh-node', { dataset: { i: String(i) } }, [h('div.sh-node-t', { text: n.title }), h('div.sh-node-s', { text: n.sub })]),
+    h('div.sh-node', { dataset: { i: String(i) } }, [h('div.sh-node-t', { text: breakable(n.title) }), h('div.sh-node-s', { text: n.sub })]),
   );
   const row = h('div.sh-chain-row');
   nodeEls.forEach((n, i) => {
@@ -433,24 +439,24 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
   const sh = shade(nWorld);
   const rgb = sh.color.map((c) => Math.round(c * 255));
   const when: Record<ApiId, string> = {
-    opengl: t(L('vid glLinkProgram – ofta uppskjutet till första draw-anropet, och ibland om igen när state ändras (hack i bilden). glGetProgramBinary kan cacha.', 'at glLinkProgram – often deferred to the first draw, and sometimes again when state changes (a hitch). glGetProgramBinary can cache it.')),
-    vulkan: t(L('i vkCreateGraphicsPipelines, när all state är känd. VkPipelineCache sparar resultatet till nästa körning.', 'in vkCreateGraphicsPipelines, once all state is known. A VkPipelineCache keeps the result for the next run.')),
-    d3d12: t(L('i CreateGraphicsPipelineState, när all state är känd. ID3D12PipelineLibrary / GetCachedBlob sparar resultatet.', 'in CreateGraphicsPipelineState, once all state is known. ID3D12PipelineLibrary / GetCachedBlob keeps the result.')),
+    opengl: t(L('Vid glLinkProgram – ofta uppskjutet till första draw, ibland igen när state ändras. glGetProgramBinary kan cacha.', 'At glLinkProgram – often deferred to the first draw, sometimes again when state changes. glGetProgramBinary can cache it.')),
+    vulkan: t(L('I vkCreateGraphicsPipelines, när all state är känd. VkPipelineCache sparar den.', 'In vkCreateGraphicsPipelines, once all state is known. A VkPipelineCache keeps it.')),
+    d3d12: t(L('I CreateGraphicsPipelineState, när all state är känd. ID3D12PipelineLibrary sparar den.', 'In CreateGraphicsPipelineState, once all state is known. An ID3D12PipelineLibrary keeps it.')),
   };
   const isaPanel = h('div.sh-panel.sh-side', {}, [
     card(t(L('GPU ISA – illustrativt utdrag (RDNA-liknande)', 'GPU ISA – illustrative excerpt (RDNA-like)')), [h('div.v-scroll.sh-scroll', {}, [asmEl(isaExcerpt())])], 'sh-card.sh-isa'),
     card(t(L('När skapas maskinkoden?', 'When is machine code made?')), [
       h('p.sh-when', { text: when[api] }),
       h('div.sh-eval', {}, [
-        h('div.hint', { text: t(L(`Samma shader körd på CPU:n – triangel #${tri}, vertex ${vi}:`, `Same shader run on the CPU – triangle #${tri}, vertex ${vi}:`)) }),
+        h('div.hint', { text: t(L(`Samma shader på CPU:n · triangel #${tri}, vertex ${vi}`, `Same shader on the CPU · triangle #${tri}, vertex ${vi}`)) }),
         h('dl.kv', {}, [
-          h('dt', { text: 'n (world)' }),
-          h('dd', { text: sh.n.map((x) => x.toFixed(3)).join(', ') }),
           h('dt', { text: 'diff' }),
           h('dd.glow-cyan', { text: sh.diffuse.toFixed(4) }),
           h('dt', { text: 'spec' }),
-          h('dd.glow-magenta', { text: sh.specular.toExponential(3) }),
-          h('dt', { text: 'outColor' }),
+          h('dd.glow-magenta', { text: sh.specular.toFixed(4) }),
+          h('dt', { text: 'n' }),
+          h('dd', { text: sh.n.map((x) => x.toFixed(3)).join(', ') }),
+          h('dt', { text: 'out' }),
           h('dd', {}, [h('span.sh-swatch', { style: { background: `rgb(${rgb.join(',')})` } }), ` ${sh.color.map((c) => c.toFixed(3)).join(', ')}`]),
         ]),
       ]),
@@ -474,7 +480,8 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
         if (step === 1) gsap.fromTo(phaseEls, { opacity: 0.15 }, { opacity: 1, stagger: 0.16, duration: dur(0.3), delay: 0.2 });
       } else {
         gsap.set(p, { opacity: 1, y: 0 });
-        gsap.set(p.querySelectorAll('.sh-line'), { opacity: 1, x: 0 });
+        const lines = p.querySelectorAll('.sh-line');
+        if (lines.length) gsap.set(lines, { opacity: 1, x: 0 });
         if (step === 1) gsap.set(phaseEls, { opacity: 1 });
       }
       shown = step;
@@ -521,7 +528,7 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
   host.append(stage, caption);
 
   const stations = nodes.map((n, i) =>
-    h(`div.shc-station.k-${kinds[i]}`, {}, [h('div.shc-st-t', { text: n.title }), h('div.shc-st-s', { text: n.sub })]),
+    h(`div.shc-station.k-${kinds[i]}`, {}, [h('div.shc-st-t', { text: breakable(n.title) }), h('div.shc-st-s', { text: n.sub })]),
   );
   const track = h('div.shc-track');
   stage.append(track, ...stations);
@@ -536,7 +543,7 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
   // IR "file" badge and the machine-code grid.
   const file = h('div.shc-file', {}, [h('span', { text: api === 'd3d12' ? '.cso' : api === 'vulkan' ? '.spv' : 'IR' }), h('small', { text: t(L('portabel', 'portable')) })]);
   stage.append(file);
-  const GRID = 16;
+  const GRID = 12;
   const gridCells = Array.from({ length: GRID }, (_, i) => h('span.shc-cell', { text: (((i + 1) * 2654435761) >>> 0).toString(16).padStart(8, '0').slice(0, 4) }));
   const grid = h('div.shc-grid', {}, gridCells);
   stage.append(grid);
@@ -557,10 +564,10 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
     if (!W || !H) return;
     const gap = Math.max(14, W * 0.025);
     const sw = (W - 32 - gap * 4) / 5;
-    const sh = Math.min(170, H * 0.5);
+    const sh = Math.max(120, Math.min(210, H - Math.max(12, H * 0.08) - 112));
     const top = Math.max(12, H * 0.08);
     const sx = stations.map((_, i) => 16 + i * (sw + gap));
-    geo = { W, H, sx, sw, y: top + sh * 0.42, top, sh };
+    geo = { W, H, sx, sw, y: top + sh * 0.4, top, sh };
     stations.forEach((s, i) => gsap.set(s, { x: sx[i], y: top, width: sw, height: sh }));
     gsap.set(track, { x: sx[0] + sw / 2, y: geo.y, width: sx[4] - sx[0] });
     const by = top + sh + 8;
@@ -568,8 +575,8 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
     if (buildCount) gsap.set(bBuild, { x: sx[0], y: by, width: bw });
     gsap.set(bRun, { x: sx[buildCount], y: by, width: sx[4] + sw - sx[buildCount] });
     gsap.set(file, { x: sx[2] + sw / 2 - 34, y: top + sh - 56 });
-    gsap.set(grid, { x: sx[4] + 8, y: top + sh * 0.56, width: sw - 16 });
-    gsap.set(vendors, { x: sx[3] + 6, y: top + sh * 0.62, width: sw - 12 });
+    gsap.set(grid, { x: sx[4] + 8, y: top + sh * 0.7, width: sw - 16 });
+    gsap.set(vendors, { x: sx[3] + 6, y: top + sh * 0.7, width: sw - 12 });
   };
 
   const maxStation = () => [0, 2, 2, 4][step];
@@ -578,7 +585,9 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
 
   const spawn = () => {
     if (!geo.W) return;
-    const tk = toks[spawnIdx++ % toks.length];
+    const tk = toks[spawnIdx % toks.length];
+    const laneY = geo.y - 13 + ((spawnIdx % 3) - 1) * 30;
+    spawnIdx++;
     const el = h('div.shc-tok.k-src', { text: tk.src });
     stage.append(el);
     const last = maxStation();
@@ -590,10 +599,10 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
       },
     });
     live.set(el, tl);
-    tl.set(el, { x: geo.sx[0] - 30, y: geo.y - 13, opacity: 0, xPercent: -50 });
+    tl.set(el, { x: geo.sx[0] - 30, y: laneY, opacity: 0, xPercent: -50 });
     tl.to(el, { x: cx(0), opacity: 1, duration: dur(0.6), ease: 'power2.out' });
     if (last === 0) {
-      tl.to(el, { y: geo.y - 13 + 22 + (spawnIdx % 3) * 20, duration: dur(1.2), ease: 'sine.inOut' });
+      tl.to(el, { y: laneY + 12, duration: dur(1.4), ease: 'sine.inOut' });
     }
     for (let k = 1; k <= last; k++) {
       tl.to(el, { x: cx(k), duration: dur(0.75), ease: 'power1.inOut' });
@@ -610,13 +619,13 @@ function conceptVisual(host: HTMLElement, ctx: SlideContext): Visual {
       tl.to(el, { scale: 1.12, duration: dur(0.12), yoyo: true, repeat: 1 });
       if (k === 2 && last === 2) tl.to(el, { y: geo.top + geo.sh - 40, scale: 0.5, duration: dur(0.5), ease: 'power2.in' });
     }
-    if (last === 4) tl.to(el, { y: geo.top + geo.sh * 0.6, scale: 0.4, duration: dur(0.4), ease: 'power2.in' });
+    if (last === 4) tl.to(el, { y: geo.top + geo.sh * 0.74, scale: 0.4, duration: dur(0.4), ease: 'power2.in' });
     tl.to(el, { opacity: 0, duration: dur(0.3) });
   };
 
   const loop = () => {
     spawn();
-    spawnCall = gsap.delayedCall(step === 0 ? 0.9 : 0.55, loop);
+    spawnCall = gsap.delayedCall(step === 0 ? 0.9 : 0.6, loop);
   };
 
   const clearTokens = () => {

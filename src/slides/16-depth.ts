@@ -84,13 +84,41 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
   };
   const diffOff = diff(off);
   const diffNoCull = diff(offNoCull);
+  // Crop for the side-by-side comparison: the area any of the three images draws into.
+  let bx0 = W;
+  let by0 = H;
+  let bx1 = 0;
+  let by1 = 0;
+  for (let p = 0; p < W * H; p++) {
+    if (r.overdraw[p] === 0 && offNoCull.overdraw[p] === 0) continue;
+    const x = p % W;
+    const y = Math.floor(p / W);
+    bx0 = Math.min(bx0, x);
+    by0 = Math.min(by0, y);
+    bx1 = Math.max(bx1, x);
+    by1 = Math.max(by1, y);
+  }
+  if (bx1 < bx0) [bx0, by0, bx1, by1] = [0, 0, W - 1, H - 1];
+  bx0 = Math.max(0, bx0 - 3);
+  by0 = Math.max(0, by0 - 3);
+  bx1 = Math.min(W - 1, bx1 + 3);
+  by1 = Math.min(H - 1, by1 + 3);
+  const CW = bx1 - bx0 + 1;
+  const CH = by1 - by0 + 1;
+  const crop = (rgba: Uint8ClampedArray) => {
+    const out = new Uint8ClampedArray(CW * CH * 4);
+    for (let y = 0; y < CH; y++) out.set(rgba.subarray(((by0 + y) * W + bx0) * 4, ((by0 + y) * W + bx0 + CW) * 4), y * CW * 4);
+    return out;
+  };
+  const crops = [r, off, offNoCull].map((im) => crop(im.color));
 
   const canvasHost = h('div.dp-canvas');
   const chartHost = h('div.dp-chart');
   const side = h('div.dp-side');
   const root = h('div.dp-root', {}, [h('div.dp-main', {}, [canvasHost, chartHost]), side]);
   host.append(root);
-  const GAP = 8;
+  const GAP = Math.max(3, Math.round(CW * 0.05));
+  const LABEL_ROWS = Math.max(3, Math.round(CH * 0.14));
   const pc = new PixelCanvas(canvasHost, W, H, 12);
   let step = 0;
   let hover: [number, number] | null = null;
@@ -98,7 +126,6 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
   let anim: Animation | null = null;
   let raf = 0;
 
-  const label = (str: string, cx: number, color = '#e8ebff') => pc.text(str, cx, -0.01 * H + 3.5, color, 11, 'center');
   const draw = () => {
     pc.clear();
     if (step === 0 || step === 1) {
@@ -133,20 +160,24 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
         pc.ctx.strokeRect(px - 2, py - 2, pc.cell + 4, pc.cell + 4);
       }
     } else if (step === 2) {
-      const imgs = [r, off, offNoCull];
       const names = [
         t(L('djuptest PÅ', 'depth test ON')),
         t(L('djuptest AV', 'depth test OFF')),
         t(L('AV + ingen culling', 'OFF + no culling')),
       ];
-      imgs.forEach((im, i) => {
-        const x = i * (W + GAP);
-        blit(pc, im.color, W, H, x, 0);
-        const [px, py] = pc.px(x, 0);
-        pc.ctx.strokeStyle = i === 0 ? 'rgba(92,240,143,0.8)' : 'rgba(255,90,110,0.8)';
+      crops.forEach((im, i) => {
+        const x = i * (CW + GAP);
+        blit(pc, im, CW, CH, x, LABEL_ROWS);
+        const [px, py] = pc.px(x, LABEL_ROWS);
+        const col = i === 0 ? '#5cf08f' : '#ff5a6e';
+        pc.ctx.save();
+        pc.ctx.strokeStyle = col;
+        pc.ctx.shadowColor = col;
+        pc.ctx.shadowBlur = 10;
         pc.ctx.lineWidth = 1.5;
-        pc.ctx.strokeRect(px + 0.5, py + 0.5, W * pc.cell - 1, H * pc.cell - 1);
-        label(names[i], x + W / 2, i === 0 ? '#5cf08f' : '#ff5a6e');
+        pc.ctx.strokeRect(px + 0.5, py + 0.5, CW * pc.cell - 1, CH * pc.cell - 1);
+        pc.ctx.restore();
+        pc.text(names[i], x + CW / 2, LABEL_ROWS / 2, col, 12, 'center');
       });
     }
   };
@@ -178,9 +209,9 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
       s('text', { x: 14, y: VH / 2 - 10, transform: `rotate(-90 14 ${VH / 2 - 10})`, 'text-anchor': 'middle', class: 'dp-axis' }, [t(L('lagrat djup d', 'stored depth d'))]),
       s('path', { d: path(depthOf), class: 'dp-curve std' }),
       s('path', { d: path((z) => 1 - depthOf(z)), class: 'dp-curve rev' }),
-      s('text', { x: X(2.3), y: Y(depthOf(2.3)) - 10, class: 'dp-lbl std' }, [t(L('standard: d = 0 nära → 1 långt bort', 'standard: d = 0 near → 1 far'))]),
-      s('text', { x: X(2.3), y: Y(1 - depthOf(2.3)) + 20, class: 'dp-lbl rev' }, ['reversed-Z: d = 1 − d']),
-      s('text', { x: X(z1) + 6, y: m.t + 14, class: 'dp-lbl band' }, [t(L('modellen', 'the model'))]),
+      s('text', { x: X(5.2), y: Y(depthOf(5.2)) + 24, class: 'dp-lbl std' }, [t(L('standard: d = 0 nära → 1 långt bort', 'standard: d = 0 near → 1 far'))]),
+      s('text', { x: X(5.2), y: Y(1 - depthOf(5.2)) - 14, class: 'dp-lbl rev' }, ['reversed-Z: 1 − d']),
+      s('text', { x: X(z1) + 6, y: Y(0.55), class: 'dp-lbl band' }, [t(L('modellen', 'the model'))]),
     ]);
     chartHost.replaceChildren(svg);
   };
@@ -191,7 +222,7 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
   const prec = [
     { name: 'D24 UNORM', steps: Math.round((dmax - dmin) * (2 ** 24 - 1)), dz: 2 ** -24 / slope(zFar) },
     { name: 'D32F', steps: floatsBetween(dmin, dmax), dz: ulp(dmax) / slope(zFar) },
-    { name: 'D32F reversed-Z', steps: floatsBetween(1 - dmax, 1 - dmin), dz: ulp(1 - dmax) / slope(zFar) },
+    { name: 'D32F rev-Z', steps: floatsBetween(1 - dmax, 1 - dmin), dz: ulp(1 - dmax) / slope(zFar) },
   ];
 
   const row = (k: string, v: string, cls = '') => `<div class="dp-row"><span>${k}</span><b class="${cls}">${v}</b></div>`;
@@ -274,9 +305,11 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
       step = st;
       hover = null;
       wipe = 1;
-      const cols = st === 2 ? W * 3 + GAP * 2 : W;
-      if (pc.cols !== cols) {
+      const cols = st === 2 ? CW * 3 + GAP * 2 : W;
+      const rows = st === 2 ? CH + LABEL_ROWS : H;
+      if (pc.cols !== cols || pc.rows !== rows) {
         pc.cols = cols;
+        pc.rows = rows;
         pc.resize();
       }
       canvasHost.style.display = st === 3 ? 'none' : '';
