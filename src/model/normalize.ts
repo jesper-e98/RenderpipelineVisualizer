@@ -2,6 +2,10 @@ import { BufferAttribute, BufferGeometry, Matrix3, Matrix4, Vector3 } from 'thre
 import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { MeshData, SourceFormat } from './types';
 
+/** Stages reported while a model is being prepared (shown in the loading overlay). */
+export type LoadStage = 'read' | 'parse' | 'weld' | 'normals' | 'normalize' | 'prepare';
+export type ProgressFn = (stage: LoadStage) => void;
+
 export interface SourceInfo {
   name: string;
   format: SourceFormat;
@@ -83,6 +87,7 @@ export function geometryToMesh(
   input: BufferGeometry,
   had: MeshData['had'],
   info: SourceInfo,
+  onProgress?: ProgressFn,
 ): MeshData {
   let g = input.clone();
   for (const name of Object.keys(g.attributes)) {
@@ -99,8 +104,11 @@ export function geometryToMesh(
       }
     }
   }
+  onProgress?.('weld');
   if (!g.index) g = mergeVertices(g, 1e-5); // weld duplicate vertices → index buffer
+  onProgress?.('normals');
   if (!had.normals || !g.attributes.normal) g.computeVertexNormals();
+  onProgress?.('normalize');
 
   g.computeBoundingBox();
   const center = new Vector3();

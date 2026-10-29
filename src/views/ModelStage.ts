@@ -25,15 +25,14 @@ import {
   Sprite,
   SpriteMaterial,
   Vector3,
-  WireframeGeometry,
   type Object3D,
 } from 'three';
 import { SHOWCASE_ROT_X, SHOWCASE_ROT_Y } from '../core/derived';
 import { dur, h } from '../core/dom';
-import { meshToGeometry } from '../model/normalize';
 import type { SlideContext } from '../slides/types';
 import { DEFAULT_CAMERA, type V3 } from '../pipeline/transform';
-import { pipelineGeometry, pipelineMaterial, VIEW_MODE, type PipelineMaterial, type ViewMode } from './pipelineMaterial';
+import { sharedGeometry } from '../core/meshGeometry';
+import { pipelineMaterial, VIEW_MODE, type PipelineMaterial, type ViewMode } from './pipelineMaterial';
 import { COLORS, disposeScene, glowTexture, label, makeScene, starfield } from './three-helpers';
 import type { StageView } from './ThreeStage';
 
@@ -201,26 +200,15 @@ export function createModelStage(host: HTMLElement, ctx: SlideContext, opts: Mod
   scene.add(pivot);
 
   const material = pipelineMaterial();
-  const solid = new Mesh(pipelineGeometry(mesh), material);
-  const wireGeo = mesh.triangleCount > 20000 ? new EdgesGeometry(meshToGeometry(mesh), 25) : new WireframeGeometry(meshToGeometry(mesh));
-  const wire = new LineSegments(wireGeo, new LineBasicMaterial({ color: COLORS.cyan, transparent: true, opacity: 0, depthWrite: false }));
-  const ptsGeo = new BufferGeometry();
-  ptsGeo.setAttribute('position', new BufferAttribute(mesh.positions, 3));
+  // Geometry is shared per mesh (built once, often in a worker) – see core/meshGeometry.ts.
+  const solid = new Mesh(sharedGeometry(mesh, 'pipeline'), material);
+  const wire = new LineSegments(sharedGeometry(mesh, 'wire'), new LineBasicMaterial({ color: COLORS.cyan, transparent: true, opacity: 0, depthWrite: false }));
   const points = new Points(
-    ptsGeo,
+    sharedGeometry(mesh, 'points'),
     new PointsMaterial({ color: COLORS.cyan, size: 0.03, map: glowTexture(), transparent: true, opacity: 0, blending: AdditiveBlending, depthWrite: false }),
   );
   // Normal "hedgehog", sampled for big meshes.
-  const step = Math.max(1, Math.ceil(mesh.vertexCount / 6000));
-  const hedge: number[] = [];
-  for (let i = 0; i < mesh.vertexCount; i += step) {
-    const p = [mesh.positions[i * 3], mesh.positions[i * 3 + 1], mesh.positions[i * 3 + 2]];
-    const n = [mesh.normals[i * 3], mesh.normals[i * 3 + 1], mesh.normals[i * 3 + 2]];
-    hedge.push(...p, p[0] + n[0] * 0.12, p[1] + n[1] * 0.12, p[2] + n[2] * 0.12);
-  }
-  const hedgeGeo = new BufferGeometry();
-  hedgeGeo.setAttribute('position', new BufferAttribute(new Float32Array(hedge), 3));
-  const normals = new LineSegments(hedgeGeo, new LineBasicMaterial({ color: COLORS.magenta, transparent: true, opacity: 0, depthWrite: false }));
+  const normals = new LineSegments(sharedGeometry(mesh, 'hedge'), new LineBasicMaterial({ color: COLORS.magenta, transparent: true, opacity: 0, depthWrite: false }));
   pivot.add(solid, wire, points, normals);
   const layers = { solid, wire, points, normals };
 

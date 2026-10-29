@@ -2,6 +2,7 @@ import gsap from 'gsap';
 import { dur, h } from '../core/dom';
 import { UI } from '../core/i18n';
 import { apiPanel } from '../views/ApiPanel';
+import { mountCode, unmountCode } from '../core/codeDrawer';
 import type { SlideDef, StageGroup, StandardSlideSpec } from './types';
 
 export const GROUP_LABEL: Record<StageGroup, keyof typeof UI> = {
@@ -39,9 +40,11 @@ export function standardSlide(spec: StandardSlideSpec): SlideDef {
       const showPanel = spec.api && (spec.apiPanel ?? 'both') !== 'none' && (spec.apiPanel === undefined || spec.apiPanel === 'both' || spec.apiPanel === mode);
       const apis = typeof spec.api === 'function' ? spec.api(ctx) : spec.api;
       const panel = showPanel && apis ? apiPanel(apis[ctx.state.api], ctx) : null;
-      const right = h('div.right', {}, [visualHost, panel?.el ?? null]);
-      const el = h('section.slide.standard', { dataset: { id: spec.id, group: spec.group } }, [story, right]);
-      if (!panel) el.classList.add('no-panel');
+      // The API panel lives in the dock's code drawer (core/codeDrawer.ts), not in the slide.
+      const right = h('div.right', {}, [visualHost]);
+      const el = h('section.slide.standard.no-panel', { dataset: { id: spec.id, group: spec.group } }, [story, right]);
+      if (panel) panel.el.classList.remove('collapsed');
+      mountCode(panel?.el ?? null);
 
       const visual = spec[mode](visualHost, ctx);
       let shown = -1;
@@ -68,6 +71,7 @@ export function standardSlide(spec: StandardSlideSpec): SlideDef {
         },
         destroy() {
           visual.destroy();
+          unmountCode(panel?.el ?? null);
         },
       };
     },

@@ -45,7 +45,9 @@ export class ThreeStage {
   private bloomPass?: UnrealBloomPass;
   private labels = new CSS2DRenderer();
   private clock = new Timer();
-  private current: { host: HTMLElement; view: StageView; ro: ResizeObserver; controls?: OrbitControls; t: number } | null = null;
+  private current: { host: HTMLElement; view: StageView; ro: ResizeObserver; controls?: OrbitControls; t: number; ready: boolean } | null = null;
+  /** Last size given to the renderer: resizing reallocates the bloom targets, so skip no-ops. */
+  private size = { w: 0, h: 0 };
   private wrap = document.createElement('div');
   /** XR: the world the headset sees; the active slide's scene is parented under `xrAnchor`. */
   readonly xrWorld = new Scene();
@@ -125,6 +127,7 @@ export class ThreeStage {
     const w = Math.max(1, this.simHost.clientWidth);
     const h = Math.max(1, this.simHost.clientHeight);
     this.renderer.setSize(w, h, false);
+    this.size = { w: 0, h: 0 }; // the simulator changed the size behind resize()'s back
     this.xrCamera.aspect = w / h;
     this.xrCamera.updateProjectionMatrix();
   }
@@ -148,7 +151,22 @@ export class ThreeStage {
       controls.maxDistance = 12;
       if (view.orbitTarget) controls.target.set(...view.orbitTarget);
     }
-    this.current = { host, view, ro, controls, t: 0 };
+    this.current = { host, view, ro, controls, t: 0, ready: false };
+    // Compile the new scene's shaders without blocking (KHR_parallel_shader_compile where
+    // available) and only show the canvas once they're ready, so a slide change never stalls.
+    const cur = this.current;
+    this.wrap.style.opacity = '0';
+    const reveal = () => {
+      if (this.current !== cur) return;
+      cur.ready = true;
+      this.wrap.style.opacity = '';
+    };
+    const renderer = this.renderer;
+    if (typeof renderer.compileAsync === 'function' && !this.presenting) {
+      renderer.compileAsync(view.scene, view.camera).then(reveal, reveal);
+      // Never wait forever (e.g. a context loss).
+      setTimeout(reveal, 1500);
+    } else reveal();
     this.renderPass!.scene = view.scene;
     this.renderPass!.camera = view.camera;
     this.bloomPass!.enabled = !!view.bloom;
@@ -172,7 +190,9 @@ export class ThreeStage {
       return;
     }
     try {
-      // Render once more and copy synchronously (the drawing buffer is still valid).
+      // Render once more and copy synchronously (the drawing buffer is still valid). Skipped if
+      // the shaders are still compiling – rendering would force a blocking compile.
+      if (!cur.ready) throw new Error('not ready');
       this.render(cur.view);
       const snap = document.createElement('canvas');
       snap.className = 'three-snapshot';
@@ -194,10 +214,16 @@ export class ThreeStage {
   private resize(): void {
     const cur = this.current;
     if (!cur || !this.renderer || this.presenting) return;
-    const w = Math.max(1, cur.host.clientWidth);
-    const h = Math.max(1, cur.host.clientHeight);
-    this.renderer.setSize(w, h, false);
-    this.composer!.setSize(w, h);
+    // A slide is built before it's in the document: its host has no size yet. Keep the current
+    // size until the ResizeObserver reports the real one (avoids two reallocations per slide).
+    if (!cur.host.isConnected || cur.host.clientWidth === 0 || cur.host.clientHeight === 0) return;
+    const w = cur.host.clientWidth;
+    const h = cur.host.clientHeight;
+    if (w !== this.size.w || h !== this.size.h) {
+      this.size = { w, h };
+      this.renderer.setSize(w, h, false);
+      this.composer!.setSize(w, h);
+    }
     this.labels.setSize(w, h);
     cur.view.camera.aspect = w / h;
     cur.view.camera.updateProjectionMatrix();
@@ -227,7 +253,7 @@ export class ThreeStage {
     cur.t += dt;
     cur.view.onFrame?.(cur.t, dt);
     if (!this.presenting) cur.controls?.update();
-    this.render(cur.view);
+    if (cur.ready || this.presenting) this.render(cur.view);
   }
 
   /** Render `scene` inside the XR world (bloom and CSS labels don't work in XR, sprites stand in). */

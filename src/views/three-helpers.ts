@@ -5,7 +5,6 @@ import {
   BufferGeometry,
   CanvasTexture,
   Color,
-  EdgesGeometry,
   LineBasicMaterial,
   LineSegments,
   Mesh,
@@ -15,11 +14,10 @@ import {
   Scene,
   ShaderMaterial,
   Vector3,
-  WireframeGeometry,
 } from 'three';
 import { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import type { MeshData } from '../model/types';
-import { meshToGeometry } from '../model/normalize';
+import { sharedGeometry } from '../core/meshGeometry';
 import { BASE_COLOR, FRAGMENT_GLSL, LIGHT_DIR, VERTEX_GLSL } from '../pipeline/shade';
 import { DEFAULT_CAMERA } from '../pipeline/transform';
 
@@ -53,19 +51,16 @@ export function shadedMesh(mesh: MeshData, color = BASE_COLOR): Mesh {
       uBaseColor: { value: new Color(...color) },
     },
   });
-  return new Mesh(meshToGeometry(mesh), material);
+  return new Mesh(sharedGeometry(mesh, 'indexed'), material);
 }
 
 export function wireframe(mesh: MeshData, color = COLORS.cyan, opacity = 0.35): LineSegments {
-  const geo = mesh.triangleCount > 20000 ? new EdgesGeometry(meshToGeometry(mesh), 25) : new WireframeGeometry(meshToGeometry(mesh));
-  return new LineSegments(geo, new LineBasicMaterial({ color, transparent: true, opacity, depthWrite: false }));
+  return new LineSegments(sharedGeometry(mesh, 'wire'), new LineBasicMaterial({ color, transparent: true, opacity, depthWrite: false }));
 }
 
 export function vertexPoints(mesh: MeshData, color = COLORS.cyan, size = 0.035): Points {
-  const g = new BufferGeometry();
-  g.setAttribute('position', new BufferAttribute(mesh.positions, 3));
   return new Points(
-    g,
+    sharedGeometry(mesh, 'points'),
     new PointsMaterial({ color, size, sizeAttenuation: true, transparent: true, opacity: 0.9, blending: AdditiveBlending, depthWrite: false }),
   );
 }
@@ -84,6 +79,7 @@ export function glowTexture(): CanvasTexture {
   g.fillStyle = grad;
   g.fillRect(0, 0, 64, 64);
   glowTex = new CanvasTexture(c);
+  glowTex.userData.shared = true;
   return glowTex;
 }
 
@@ -122,12 +118,25 @@ export function label(text: string, className = ''): CSS2DObject {
   return new CSS2DObject(el);
 }
 
+function disposeTextures(mat: Record<string, unknown>): void {
+  const free = (v: unknown) => {
+    const tex = v as { isTexture?: boolean; dispose?: () => void; userData?: { shared?: boolean } } | null;
+    if (tex?.isTexture && !tex.userData?.shared) tex.dispose?.();
+  };
+  for (const v of Object.values(mat)) free(v);
+  const uniforms = mat.uniforms as Record<string, { value: unknown }> | undefined;
+  if (uniforms) for (const u of Object.values(uniforms)) free(u?.value);
+}
+
 export function disposeScene(scene: Scene): void {
   scene.traverse((o) => {
     const m = o as Mesh;
-    m.geometry?.dispose?.();
-    const mat = m.material as { dispose?: () => void } | { dispose?: () => void }[] | undefined;
-    if (Array.isArray(mat)) mat.forEach((x) => x.dispose?.());
-    else mat?.dispose?.();
+    // Shared per-mesh geometry (core/meshGeometry.ts) outlives any single slide.
+    if (!m.geometry?.userData?.shared) m.geometry?.dispose?.();
+    // Materials are NOT disposed: disposing releases their compiled shader program, which three.js
+    // would then recompile (blocking) on the next visit to the slide. Programs are shared by
+    // every material with the same shader, so keeping them is cheap; textures are freed.
+    const mats = (Array.isArray(m.material) ? m.material : m.material ? [m.material] : []) as unknown as Record<string, unknown>[];
+    for (const mat of mats) disposeTextures(mat);
   });
 }

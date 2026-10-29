@@ -23,6 +23,7 @@ import { L, type Text } from '../core/i18n';
 import type { ApiId } from '../core/state';
 import type { MeshData } from '../model/types';
 import { clipPlanes, clipPolygon, type ClipVertex } from '../pipeline/clip';
+import { adoptGeometry } from '../core/meshGeometry';
 import { DEFAULT_CAMERA, modelMatrix, projectionMatrix, viewMatrix, type Camera, type V4 } from '../pipeline/transform';
 import { createModelStage, glowTexture, secs, type ModelStage } from '../views/ModelStage';
 import type { PipelineMaterial } from '../views/pipelineMaterial';
@@ -83,8 +84,12 @@ class Soup {
   get triangles() {
     return this.tri.length / 3;
   }
-  geometry(): BufferGeometry {
-    const g = new BufferGeometry();
+  private geo: BufferGeometry | null = null;
+  /** Built once per clip case and kept with the mesh, so revisiting the slide doesn't re-upload it. */
+  geometry(mesh: MeshData): BufferGeometry {
+    if (this.geo) return this.geo;
+    const g = adoptGeometry(mesh, new BufferGeometry());
+    this.geo = g;
     g.setAttribute('position', new BufferAttribute(new Float32Array(this.pos), 3));
     g.setAttribute('normal', new BufferAttribute(new Float32Array(this.nrm), 3));
     g.setAttribute('uv', new BufferAttribute(new Float32Array((this.pos.length / 3) * 2), 2));
@@ -308,7 +313,7 @@ function buildScene(host: HTMLElement, ctx: SlideContext, concept: boolean): Cli
     return m;
   };
   const mk = (s: Soup, m: PipelineMaterial) => {
-    const me = new Mesh(s.geometry(), m);
+    const me = new Mesh(s.geometry(mesh), m);
     me.frustumCulled = false;
     model.add(me);
     return me;
