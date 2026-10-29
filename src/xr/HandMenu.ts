@@ -58,7 +58,7 @@ export class HandMenu {
       (g, w, h) => {
         g.beginPath();
         g.roundRect(3, 3, w - 6, h - 6, 24);
-        g.fillStyle = 'rgba(9,12,30,0.82)';
+        g.fillStyle = 'rgba(9,12,30,0.94)';
         g.fill();
         g.lineWidth = 3;
         g.strokeStyle = hexA('#9b7bff', 0.6);
@@ -78,7 +78,7 @@ export class HandMenu {
       'hm:prev': () => '‹',
       'hm:next': () => '›',
       'hm:api': () => this.host.apiLabel(),
-      'hm:summon': () => t(L('Konsol hit', 'Console here')),
+      'hm:summon': () => t(L('Konsol\nhit', 'Console\nhere')),
     };
     const act: Record<string, () => void> = {
       'hm:prev': () => this.host.prev(),
@@ -93,6 +93,8 @@ export class HandMenu {
       c.ignore = (p: Pointer) => p.id === this.handId;
       this.ui.add(c, this.root);
     }
+    // The hand menu is always the nearest UI: draw it over the console behind it.
+    this.root.traverse((o) => (o.renderOrder += 30));
   }
 
   /** Which pointer (if any) could carry the menu, and how much its palm faces the head. */

@@ -523,8 +523,16 @@ export function button(w: number, h: number, text: () => string, accent = '#38e1
     (g, cw, ch, st) => {
       glassRect(g, cw, ch, st, accent);
       const t = text();
-      const size = t.length <= 2 ? ch * 0.55 : ch * 0.36;
-      label(g, t, cw / 2, ch / 2 + 1, size, st.active ? '#05060d' : st.enabled ? '#eef0ff' : 'rgba(200,210,240,0.35)', 700, 'center', cw * 0.88);
+      const color = st.active ? '#05060d' : st.enabled ? '#eef0ff' : 'rgba(200,210,240,0.35)';
+      const lines = t.split('\n');
+      if (lines.length > 1) {
+        // Two-line label (small square buttons).
+        const size = ch * 0.27;
+        lines.slice(0, 2).forEach((l, i) => label(g, l, cw / 2, ch / 2 + (i - 0.5) * size * 1.15 + 1, size, color, 700, 'center', cw * 0.86));
+      } else {
+        const size = t.length <= 2 ? ch * 0.55 : ch * 0.36;
+        label(g, t, cw / 2, ch / 2 + 1, size, color, 700, 'center', cw * 0.88);
+      }
     },
     undefined,
     id,

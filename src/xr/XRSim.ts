@@ -243,7 +243,7 @@ export class XRSim {
     const camRight = new Vector3(1, 0, 0).applyQuaternion(cam.quaternion);
     const camUp = new Vector3(0, 1, 0).applyQuaternion(cam.quaternion);
     const camFwd = new Vector3(0, 0, -1).applyQuaternion(cam.quaternion);
-    const palmPos = cam.position.clone().addScaledVector(camRight, -0.15).addScaledVector(camUp, -0.2).addScaledVector(camFwd, 0.36);
+    const palmPos = cam.position.clone().addScaledVector(camRight, -0.22).addScaledVector(camUp, -0.24).addScaledVector(camFwd, 0.42);
     const palm = { pos: palmPos, normal: cam.position.clone().sub(palmPos).normalize() };
     const palmPointer = () =>
       input.setSim(1, { origin: palmPos, dir: camFwd, tip: null, grip: palmPos, pinch: false, fist: false, handedness: 'left', palm });

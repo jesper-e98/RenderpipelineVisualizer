@@ -30,26 +30,46 @@ for OpenGL, Vulkan and DirectX 12. UI in Swedish and English.*
 ## Holo-labbet (VR/AR)
 
 Gå in i VR eller AR så projiceras ett holografiskt bord fram framför dig. Slidens 3D-scen svävar ovanför
-bordet och spelar upp samma animationer som på skärmen.
+bordet och spelar upp samma animationer som på skärmen. Handspårning är förstahandsvalet (Quest 3/3S), men
+kontroller fungerar också.
 
 | Gest (händer) | Kontroller | Vad händer |
 |---|---|---|
-| Nyp på/nära hologrammet och dra | Avtryckare | Flytta och vrid hologrammet, släpp med fart så snurrar det vidare |
-| Nyp med båda händerna | Båda avtryckarna | Skala (dra isär/ihop) och vrid runt |
-| Två knutna nävar, dra isär | Båda grepp-knapparna | Exploded view – trianglarna glider isär |
-| Peta med pekfingret | Sikta + avtryckare | Tryck på knappar, steg-karusellen och reglagen |
+| Nyp inne i det glödande skalet runt hologrammet och dra | Avtryckare med handen i skalet | Flytta och vrid hologrammet, släpp med fart så snurrar det vidare |
+| Sikta på hologrammet med strålen och nyp | Sikta + avtryckare | Greppa på avstånd – för handen från/mot dig för att skjuta/dra |
+| Nyp med båda händerna | Båda avtryckarna | Skala (dra isär/ihop) och vrid runt händernas mittpunkt |
+| Två knutna nävar, håll stilla ett ögonblick, dra isär | Båda grepp-knapparna | Exploded view – trianglarna glider isär |
+| Peta med pekfingret | Peta med kontrollens nos | Tryck på knappar, steg och reglage i konsolen |
+| Sikta med strålen, nyp och släpp | Sikta + avtryckare | Samma sak på avstånd – knappen trycks när du *släpper* över den |
+| Vänd vänster handflata mot dig | Håll in Y | Handmenyn dyker upp ovanför handen |
 | – | Tumspak vänster/höger, upp/ned | Byt API, byt läge |
 
-Runt dig finns:
-- **Steg-karusellen** med pipelinens 20 steg, till vänster och höger om dig.
-- **Infoskärmen** bakom hologrammet, med titel, punkt, siffror och ‹ › / API / läge. Greppa handtaget "flytta" för att
-  flytta den.
-- **Holo-kontrollen** vid bordskanten: dra isär-reglage, lager (solid/wire/punkter/normaler), modellval,
-  ‹ ›, återställ vy, ljud och avsluta.
+Skalet runt hologrammet tänds när en hand är nära nog att greppa, och en ring visar var greppet tar.
+Varje steg (nära → greppat → släppt) bekräftas med ett litet ljud och en vibration i kontrollen.
+
+All UI finns på ett ställe: **holo-konsolen**, en svagt böjd pult framför dig, under hologrammet och inom
+räckhåll för att peta:
+- **Info** i mitten – titel, aktuell punkt, stegprickar och upp till tre nyckeltal.
+- **Stegraden** längst ned – pipelinens 20 steg i en rad, färgade efter grupp, med ‹ › i ändarna. Pekar du på
+  ett steg visar infopanelen vart du hoppar.
+- **Verktyg** på sidorna – API (OpenGL/Vulkan/DX12), läge (verklig data/koncept), modellval, lager
+  (solid/wire/punkter/normaler), dra isär-reglaget, återställ vy, ljud och avsluta.
+
+Konsolen följer lugnt med när du vrider dig mer än ~35° bort från den. Greppa handtaget "Flytta konsolen"
+för att ställa den någon annanstans (då fästs den), och tryck på **Fäst/Följer dig** för att växla.
+
+**Handmenyn:** vänd vänster handflata mot ansiktet och håll den stilla, så visas en liten meny ovanför handen
+med ‹ ›, byt API och **Konsol hit** (hämtar konsolen till dig). Tryck med höger pekfinger eller strålen.
+
+Knapparna är minst 4 × 4 cm att träffa, även om de ser mindre ut. Ett finger som petar visar en ring på ytan,
+knappen trycks in med fingret och måste släppas ut igen innan nästa tryck – en hand som sveper förbi från
+sidan eller bakifrån trycker inte. Händer, strålar och greppade objekt är filtrerade (One Euro-filter) så att
+de inte darrar, och ett nyp tål korta tapp i handspårningen utan att släppa.
 
 **Utan headset:** öppna sidan med `?xrsim` i adressen (t.ex. `…/RenderpipelineVisualizer/?xrsim`) och tryck på
-**SIM**. Sikta med musen och håll vänster knapp för att nypa. Shift+dra = två händer, Alt+dra = dra isär,
-högerdra/pilar = titta runt, WASD = gå och Esc = lämna.
+**SIM**. Sikta med musen och håll vänster knapp för att nypa (släpp över en knapp för att trycka). Shift+dra =
+två händer, Alt+dra = dra isär, **H** = vänster handflata upp (handmenyn), **P** = peta med fingret i stället för
+att nypa, högerdra/pilar = titta runt, WASD = gå och Esc = lämna.
 
 ## Kom igång
 

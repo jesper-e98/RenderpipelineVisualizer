@@ -1,6 +1,6 @@
 import { Group, Matrix4, Quaternion, Ray, Scene, Sphere, Vector3 } from 'three';
 import { h } from '../core/dom';
-import { tr, type Text } from '../core/i18n';
+import { L, tr, type Text } from '../core/i18n';
 import { API_LIST, type ApiId, type Store } from '../core/state';
 import type { SlideEngine } from '../core/SlideEngine';
 import { builtinMesh } from '../model/builtins';
@@ -376,7 +376,7 @@ export class XRController {
     return { mode: 'two', a, b, aFar, bFar, a0: a.grip.clone(), b0: b.grip.clone(), start: this.anchorPose() };
   }
 
-  private manipulate(pointers: Pointer[], busy: Set<number>, dt: number, nowMs: number, head: Vector3): void {
+  private manipulate(pointers: Pointer[], busy: Set<number>, dt: number, nowMs: number, head: Vector3, menuHand: number | null): void {
     const free = pointers.filter((p) => !busy.has(p.id) || this.grabUses(p));
     const sphere = this.holoSphere();
     const reaches = new Map<number, Reach | null>();
@@ -390,7 +390,8 @@ export class XRController {
 
     // Two fists, closed and held still for a moment → pull apart.
     if (g?.mode !== 'explode') {
-      const fists = free.filter((p) => p.fist);
+      // Fists never use the UI, so a ray resting on the console doesn't block them; only the hand menu's hand is out.
+      const fists = pointers.filter((p) => p.fist && p.id !== menuHand);
       const ok = fists.length >= 2 && !!hooks && fists[0].speed < EXPLODE_GATE.maxSpeed && fists[1].speed < EXPLODE_GATE.maxSpeed;
       this.fistSince = heldSince(this.fistSince, ok, nowMs);
       if (ok && nowMs - this.fistSince! >= EXPLODE_GATE.steadyMs) {
@@ -568,7 +569,7 @@ export class XRController {
     }
     const busy = this.ui.update(pointers, now, exclude);
     if (menuHand !== null) busy.add(menuHand);
-    this.manipulate(pointers, busy, dt, now, head.pos);
+    this.manipulate(pointers, busy, dt, now, head.pos, menuHand);
     for (const p of pointers) {
       if (p.id === menuHand) p.rayMode = 'hidden';
       p.holding = this.grabUses(p) || this.ui.holding(p.id);
@@ -618,7 +619,7 @@ export class XRController {
       title: slide?.querySelector('.title')?.textContent ?? tr(def.title, s.lang),
       bullet:
         slide?.querySelector('.bullet.current')?.textContent ??
-        this.t({ sv: 'Tryck på › eller välj ett steg i raden nedanför.', en: 'Press › or pick a stage in the strip below.' }),
+        this.t(L('Tryck på › eller välj ett steg i raden nedanför.', 'Press › or pick a stage in the strip below.')),
       step: this.engine.step,
       steps: def.steps,
       index: this.engine.index,
