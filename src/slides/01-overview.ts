@@ -137,7 +137,7 @@ function textPage(m: MeshData, width: number) {
   const c = document.createElement('canvas');
   c.width = CW;
   c.height = CH;
-  const g = c.getContext('2d')!;
+  const g = c.getContext('2d', { willReadFrequently: true })!;
   const lines = m.sourcePreview.slice(0, 18);
   const lh = Math.min(27, (CH - 24) / Math.max(1, lines.length));
   g.font = `600 ${Math.round(lh * 0.8)}px JetBrains Mono, ui-monospace, monospace`;

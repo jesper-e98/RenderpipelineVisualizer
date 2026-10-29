@@ -20,11 +20,12 @@ import { glowTexture } from '../views/three-helpers';
 
 /** Lab layout in the lab's local frame: user at the origin, looking down −z, y up from the floor. */
 export const LAB = {
-  tableCenter: new Vector3(0, 0, -0.75),
+  // Far enough ahead that the holo-console fits between the user and the hologram's grab volume.
+  tableCenter: new Vector3(0, 0, -0.9),
   tableRadius: 0.42,
   tableHeight: 0.9,
   /** Where the hologram floats (its centre). */
-  holoHome: new Vector3(0, 1.24, -0.75),
+  holoHome: new Vector3(0, 1.3, -0.9),
   holoScale: 0.2,
 };
 

@@ -596,9 +596,15 @@ function dataVisual(host: HTMLElement, ctx: SlideContext): Visual {
         buildTimeline();
         if (measured === null) {
           timer = window.setTimeout(() => {
-            const t0 = performance.now();
-            renderMesh(ctx.state.mesh, api, 320, 200, { rotY: SHOWCASE_ROT_Y, rotX: SHOWCASE_ROT_X });
-            measured = performance.now() - t0;
+            // The 320×200 render is prepared in a worker, which also timed it; only time it here
+            // (blocking) if it had to be computed on the main thread.
+            const prepared = ctx.derived.render(api, 320, 200) as { ms?: number };
+            if (prepared.ms !== undefined) measured = prepared.ms;
+            else {
+              const t0 = performance.now();
+              renderMesh(ctx.state.mesh, api, 320, 200, { rotY: SHOWCASE_ROT_Y, rotX: SHOWCASE_ROT_X });
+              measured = performance.now() - t0;
+            }
             if (step === 2) {
               run();
               buildTimeline();

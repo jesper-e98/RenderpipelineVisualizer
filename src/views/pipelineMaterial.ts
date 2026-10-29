@@ -14,11 +14,16 @@ export const VIEW_MODE = {
 } as const;
 export type ViewMode = keyof typeof VIEW_MODE;
 
-/**
- * Non-indexed copy of the mesh with per-triangle attributes, so a single material can explode
- * triangles, draw them in index order, highlight one, and so on.
- */
-export function pipelineGeometry(mesh: MeshData): BufferGeometry {
+export interface PipelineArrays {
+  position: Float32Array;
+  normal: Float32Array;
+  uv: Float32Array;
+  aFaceNormal: Float32Array;
+  aTri: Float32Array;
+}
+
+/** The arrays behind `pipelineGeometry` (pure, so a worker can build them). */
+export function pipelineArrays(mesh: MeshData): PipelineArrays {
   const n = mesh.triangleCount;
   const pos = new Float32Array(n * 9);
   const nrm = new Float32Array(n * 9);
@@ -28,34 +33,39 @@ export function pipelineGeometry(mesh: MeshData): BufferGeometry {
   const P = mesh.positions;
   const N = mesh.normals;
   const U = mesh.uvs;
+  const I = mesh.indices;
   for (let t = 0; t < n; t++) {
-    const ia = mesh.indices[t * 3];
-    const ib = mesh.indices[t * 3 + 1];
-    const ic = mesh.indices[t * 3 + 2];
+    const ia = I[t * 3], ib = I[t * 3 + 1], ic = I[t * 3 + 2];
     const ax = P[ia * 3], ay = P[ia * 3 + 1], az = P[ia * 3 + 2];
-    const bx = P[ib * 3], by = P[ib * 3 + 1], bz = P[ib * 3 + 2];
-    const cx = P[ic * 3], cy = P[ic * 3 + 1], cz = P[ic * 3 + 2];
-    // Face normal for the explode effect.
-    const ux = bx - ax, uy = by - ay, uz = bz - az;
-    const vx = cx - ax, vy = cy - ay, vz = cz - az;
+    const ux = P[ib * 3] - ax, uy = P[ib * 3 + 1] - ay, uz = P[ib * 3 + 2] - az;
+    const vx = P[ic * 3] - ax, vy = P[ic * 3 + 1] - ay, vz = P[ic * 3 + 2] - az;
     let fx = uy * vz - uz * vy, fy = uz * vx - ux * vz, fz = ux * vy - uy * vx;
     const fl = Math.hypot(fx, fy, fz) || 1;
     fx /= fl; fy /= fl; fz /= fl;
-    [ia, ib, ic].forEach((vi, k) => {
+    for (let k = 0; k < 3; k++) {
+      const vi = k === 0 ? ia : k === 1 ? ib : ic;
       const o = t * 9 + k * 3;
       pos[o] = P[vi * 3]; pos[o + 1] = P[vi * 3 + 1]; pos[o + 2] = P[vi * 3 + 2];
       nrm[o] = N[vi * 3]; nrm[o + 1] = N[vi * 3 + 1]; nrm[o + 2] = N[vi * 3 + 2];
       face[o] = fx; face[o + 1] = fy; face[o + 2] = fz;
       if (U) { uv[t * 6 + k * 2] = U[vi * 2]; uv[t * 6 + k * 2 + 1] = U[vi * 2 + 1]; }
       tri[t * 3 + k] = t;
-    });
+    }
   }
+  return { position: pos, normal: nrm, uv, aFaceNormal: face, aTri: tri };
+}
+
+/**
+ * Non-indexed copy of the mesh with per-triangle attributes, so a single material can explode
+ * triangles, draw them in index order, highlight one, and so on.
+ */
+export function pipelineGeometry(mesh: MeshData, arrays: PipelineArrays = pipelineArrays(mesh)): BufferGeometry {
   const g = new BufferGeometry();
-  g.setAttribute('position', new BufferAttribute(pos, 3));
-  g.setAttribute('normal', new BufferAttribute(nrm, 3));
-  g.setAttribute('uv', new BufferAttribute(uv, 2));
-  g.setAttribute('aFaceNormal', new BufferAttribute(face, 3));
-  g.setAttribute('aTri', new BufferAttribute(tri, 1));
+  g.setAttribute('position', new BufferAttribute(arrays.position, 3));
+  g.setAttribute('normal', new BufferAttribute(arrays.normal, 3));
+  g.setAttribute('uv', new BufferAttribute(arrays.uv, 2));
+  g.setAttribute('aFaceNormal', new BufferAttribute(arrays.aFaceNormal, 3));
+  g.setAttribute('aTri', new BufferAttribute(arrays.aTri, 1));
   g.computeBoundingSphere();
   return g;
 }

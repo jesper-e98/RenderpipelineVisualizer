@@ -2,7 +2,7 @@ import { Mesh, type BufferGeometry, type Matrix4, type Object3D } from 'three';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
-import { geometryToMesh, hexDump, mergeParts, textPreview } from './normalize';
+import { geometryToMesh, hexDump, mergeParts, textPreview, type ProgressFn } from './normalize';
 import type { MeshData } from './types';
 
 export const ACCEPTED_EXTENSIONS = ['.obj', '.gltf', '.glb', '.stl'];
@@ -26,14 +26,15 @@ function collectMeshes(root: Object3D): { geometry: BufferGeometry; matrix: Matr
   return parts;
 }
 
-function fromParts(parts: { geometry: BufferGeometry; matrix?: Matrix4 }[], info: Parameters<typeof geometryToMesh>[2]): MeshData {
+function fromParts(parts: { geometry: BufferGeometry; matrix?: Matrix4 }[], info: Parameters<typeof geometryToMesh>[2], onProgress?: ProgressFn): MeshData {
   if (!parts.length) throw new Error('No triangle meshes found in file');
   const { geometry, had } = mergeParts(parts);
-  return geometryToMesh(geometry, had, info);
+  return geometryToMesh(geometry, had, info, onProgress);
 }
 
 /** Parse a model file's bytes. The format is chosen from the file extension. */
-export async function parseModel(fileName: string, buffer: ArrayBuffer): Promise<MeshData> {
+export async function parseModel(fileName: string, buffer: ArrayBuffer, onProgress?: ProgressFn): Promise<MeshData> {
+  onProgress?.('parse');
   const ext = fileName.toLowerCase().slice(fileName.lastIndexOf('.'));
   const bytes = new Uint8Array(buffer);
   const name = fileName.replace(/\.[^.]+$/, '');
@@ -51,7 +52,7 @@ export async function parseModel(fileName: string, buffer: ArrayBuffer): Promise
       format: 'OBJ',
       sourcePreview: textPreview(text),
       sourceIsBinary: false,
-    });
+    }, onProgress);
   }
 
   if (ext === '.stl') {
@@ -60,7 +61,7 @@ export async function parseModel(fileName: string, buffer: ArrayBuffer): Promise
     const preview = isAscii
       ? textPreview(new TextDecoder().decode(bytes), 'endfacet')
       : [...hexDump(bytes, 80), '…', ...hexDump(bytes, 50, 84)];
-    return fromParts([{ geometry }], { ...base, format: 'STL', sourcePreview: preview, sourceIsBinary: !isAscii });
+    return fromParts([{ geometry }], { ...base, format: 'STL', sourcePreview: preview, sourceIsBinary: !isAscii }, onProgress);
   }
 
   if (ext === '.gltf' || ext === '.glb') {
@@ -84,7 +85,7 @@ export async function parseModel(fileName: string, buffer: ArrayBuffer): Promise
       format: isGlb ? 'GLB' : 'glTF',
       sourcePreview: preview,
       sourceIsBinary: isGlb,
-    });
+    }, onProgress);
   }
 
   if (ext === '.blend') throw new BlendFileError();

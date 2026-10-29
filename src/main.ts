@@ -3,11 +3,13 @@ import 'highlight.js/styles/github-dark.css';
 import gsap from 'gsap';
 import { h } from './core/dom';
 import { tr, UI } from './core/i18n';
-import { Derived } from './core/derived';
+import { ModelLoader } from './core/modelLoader';
+import { onCodeChange, setCodeDrawerHost } from './core/codeDrawer';
+import { LoadingOverlay } from './views/LoadingOverlay';
 import { SlideEngine } from './core/SlideEngine';
 import { API_LIST, loadPref, Store, type ApiId, type Lang, type Mode } from './core/state';
 import { BUILTINS, builtinMesh, type BuiltinId } from './model/builtins';
-import { ACCEPTED_EXTENSIONS, BlendFileError, loadModelFile } from './model/loadModel';
+import { ACCEPTED_EXTENSIONS, BlendFileError } from './model/loadModel';
 import { SLIDES } from './slides';
 import { GROUP_LABEL } from './slides/standard';
 import { ThreeStage } from './views/ThreeStage';
@@ -22,11 +24,10 @@ const store = new Store({
   mode: loadPref<Mode>('mode', ['data', 'concept'], 'data'),
   lang: loadPref<Lang>('lang', ['sv', 'en'], 'sv'),
 });
-let derived = new Derived(store.state.mesh);
-store.on((s, changed) => {
-  if (changed.includes('mesh')) derived = new Derived(s.mesh);
-});
 const t = (x: Parameters<typeof tr>[0]) => tr(x, store.state.lang);
+// Loading + per-model precomputation run in workers; the loader owns the current Derived.
+const loadingOverlay = new LoadingOverlay(() => store.state.lang);
+const loader = new ModelLoader(store, loadingOverlay);
 
 // ---------- Layout ----------
 const fileInput = h('input', { attrs: { type: 'file', accept: ACCEPTED_EXTENSIONS.join(','), hidden: true } });
@@ -38,34 +39,43 @@ const langSeg = h('div.seg.lang-seg', { attrs: { role: 'radiogroup' } });
 const meshInfo = h('div.mesh-info');
 const xrControls = h('div.xr-controls');
 
-const topbar = h('header.topbar.glass', {}, [
-  h('div.brand', {}, [h('span.logo'), h('span', { html: 'Render<b>Pipeline</b><i>//</i>Viz' })]),
-  h('div.model-picker', {}, [modelSelect, loadBtn, fileInput, meshInfo]),
-  h('div.controls', {}, [apiSeg, modeSeg, langSeg, xrControls]),
-]);
-
 const stageEl = h('main.slides');
 const minimap = h('nav.minimap', { attrs: { 'aria-label': 'Pipeline' } });
 const prevBtn = h('button.nav-btn.prev', { html: '&#8592;' });
 const nextBtn = h('button.nav-btn.next', { html: '&#8594;' });
 const stepDots = h('div.step-dots');
 const counter = h('div.counter');
-const keysHint = h('div.keys-hint');
+const keysHint = h('button.btn.icon-btn.keys-hint', { text: '⌨', attrs: { type: 'button' } });
 const progress = h('div.progress', {}, [h('div.progress-fill')]);
+const codeBtn = h('button.btn.code-btn', { attrs: { type: 'button', 'aria-expanded': 'false' } });
+const moreBtn = h('button.btn.icon-btn.dock-more', { text: '⚙', attrs: { type: 'button', 'aria-expanded': 'false' } });
+const codeDrawer = h('div.code-drawer#code-drawer');
+setCodeDrawerHost(codeDrawer);
 
-const bottombar = h('footer.bottombar.glass', {}, [
+// One control dock for everything: navigation on top, all settings below.
+const dock = h('footer.dock.glass', {}, [
   progress,
-  h('div.bottom-row', {}, [prevBtn, h('div.mid', {}, [minimap, h('div.sub-row', {}, [counter, stepDots, keysHint])]), nextBtn]),
+  h('div.dock-row.nav-row', {}, [prevBtn, h('div.mid', {}, [minimap]), nextBtn]),
+  h('div.dock-row.ctl-row', {}, [
+    h('div.brand', {}, [h('span.logo'), h('span.brand-text', { html: 'Render<b>Pipeline</b><i>//</i>Viz' })]),
+    h('div.dock-status', {}, [counter, stepDots]),
+    moreBtn,
+    h('div.dock-extra', {}, [
+      h('div.dock-group.model-picker', {}, [modelSelect, loadBtn, fileInput, meshInfo]),
+      h('div.dock-group.controls', {}, [apiSeg, modeSeg, langSeg]),
+      h('div.dock-group', {}, [codeBtn, xrControls, keysHint]),
+    ]),
+  ]),
 ]);
 const dropOverlay = h('div.drop-overlay', {}, [h('div.drop-box', {}, [h('div.drop-icon'), h('p.drop-text')])]);
 const toast = h('div.toast');
 const bgGlow = h('div.bg-glow', {}, [h('div.orb.o1'), h('div.orb.o2'), h('div.orb.o3'), h('div.grid-floor')]);
 
-app.append(bgGlow, topbar, stageEl, bottombar, dropOverlay, toast);
+app.append(bgGlow, stageEl, codeDrawer, dock, dropOverlay, loadingOverlay.el, toast);
 
 // ---------- Engine ----------
 const stage = new ThreeStage();
-const engine = new SlideEngine(stageEl, SLIDES, store, stage, () => derived);
+const engine = new SlideEngine(stageEl, SLIDES, store, stage, () => loader.derived);
 const xr = new XRController(stage, engine, store);
 // Desktop XR simulator (try the holo-lab without a headset): add ?xrsim to the URL.
 const xrsim = new URLSearchParams(location.search).has('xrsim') ? new XRSim(stage, xr, store) : null;
@@ -119,7 +129,9 @@ function renderChrome() {
   dropOverlay.querySelector('.drop-text')!.textContent = t(UI.dropHint);
   prevBtn.title = t(UI.prev);
   nextBtn.title = t(UI.next);
-  keysHint.textContent = t(UI.keysHint);
+  keysHint.title = t(UI.keysHint);
+  keysHint.setAttribute('aria-label', t(UI.keysHint));
+  renderCodeBtn();
   renderMinimap();
 }
 
@@ -168,6 +180,44 @@ function updateNav(index: number, step: number) {
   nextBtn.disabled = index === SLIDES.length - 1 && step === def.steps - 1;
 }
 
+// ---------- Code drawer ----------
+let codeOpen = false;
+try {
+  codeOpen = localStorage.getItem('rpv.codeOpen') === '1';
+} catch {
+  /* optional preference */
+}
+let hasCode = false;
+function renderCodeBtn() {
+  const api = API_LIST.find((a) => a.id === store.state.api)!;
+  codeBtn.innerHTML = `<span class="code-ic">{ }</span> ${t(UI.code)} · <b>${api.label}</b>`;
+  codeBtn.disabled = !hasCode;
+  codeBtn.setAttribute('aria-expanded', String(codeOpen && hasCode));
+  document.body.classList.toggle('code-open', codeOpen && hasCode);
+}
+function setCodeOpen(open: boolean) {
+  codeOpen = open;
+  try {
+    localStorage.setItem('rpv.codeOpen', open ? '1' : '0');
+  } catch {
+    /* optional preference */
+  }
+  renderCodeBtn();
+  if (open && hasCode) gsap.fromTo(codeDrawer, { y: 24, opacity: 0 }, { y: 0, opacity: 1, duration: 0.3, ease: 'power3.out', clearProps: 'transform' });
+}
+codeBtn.addEventListener('click', () => setCodeOpen(!codeOpen));
+onCodeChange((has) => {
+  hasCode = has;
+  renderCodeBtn();
+});
+moreBtn.addEventListener('click', () => {
+  const open = !dock.classList.contains('more-open');
+  dock.classList.toggle('more-open', open);
+  moreBtn.setAttribute('aria-expanded', String(open));
+});
+// Keep the drawer just above the dock, whatever height the dock wraps to.
+new ResizeObserver(() => document.documentElement.style.setProperty('--dock-h', `${dock.offsetHeight}px`)).observe(dock);
+
 engine.onChange(updateNav);
 store.on(renderChrome);
 
@@ -184,6 +234,7 @@ window.addEventListener('keydown', (e) => {
   else if (k === 'Home') engine.go(0, 0);
   else if (k === 'End') engine.go(SLIDES.length - 1, 0);
   else if (k === 'm' || k === 'M') store.set({ mode: store.state.mode === 'data' ? 'concept' : 'data' });
+  else if (k === 'c' || k === 'C') setCodeOpen(!codeOpen);
   else if (k === '1' || k === '2' || k === '3') store.set({ api: API_LIST[Number(k) - 1].id });
   else return;
   e.preventDefault();
@@ -202,7 +253,10 @@ stageEl.addEventListener('touchend', (e) => {
 
 modelSelect.addEventListener('change', () => {
   const v = modelSelect.value;
-  if (v !== '__file') store.set({ mesh: builtinMesh(v as BuiltinId) });
+  if (v !== '__file') {
+    const b = BUILTINS.find((x) => x.id === v)!;
+    void loader.loadMesh(builtinMesh(v as BuiltinId), t(b.label)).catch(() => {});
+  }
 });
 
 function showToast(msg: string, kind: 'ok' | 'err' = 'ok') {
@@ -213,12 +267,11 @@ function showToast(msg: string, kind: 'ok' | 'err' = 'ok') {
 }
 
 async function loadFile(file: File) {
-  showToast(t(UI.loading));
   try {
-    const mesh = await loadModelFile(file);
-    store.set({ mesh });
+    const mesh = await loader.loadFile(file);
     showToast(`${file.name} · ${mesh.vertexCount.toLocaleString()} ${t(UI.vertices)} · ${mesh.triangleCount.toLocaleString()} ${t(UI.triangles)}`);
   } catch (err) {
+    if ((err as Error).message === 'superseded') return; // another file was dropped meanwhile
     console.error(err);
     if (err instanceof BlendFileError) showToast(t(UI.blendHint), 'err');
     else showToast(`${t(UI.loadError)}: ${(err as Error).message}`, 'err');
@@ -257,7 +310,7 @@ window.addEventListener('rpv:load-file', (e) => loadFile((e as CustomEvent<File>
 window.addEventListener('rpv:go', (e) => engine.go((e as CustomEvent<number>).detail, 0));
 
 // Debug/testing hook.
-(window as unknown as { rpv: unknown }).rpv = { store, engine, stage, xr, xrsim, get derived() { return derived; } };
+(window as unknown as { rpv: unknown }).rpv = { store, engine, stage, xr, xrsim, loader, get derived() { return loader.derived; } };
 
 renderChrome();
 engine.start();

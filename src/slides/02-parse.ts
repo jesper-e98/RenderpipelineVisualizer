@@ -299,7 +299,7 @@ function textPage(m: MeshData, width: number) {
   const c = document.createElement('canvas');
   c.width = CW;
   c.height = CH;
-  const g = c.getContext('2d')!;
+  const g = c.getContext('2d', { willReadFrequently: true })!;
   const kind = kindOf(m);
   const lines = m.sourcePreview.slice(0, 20);
   const lh = Math.min(26, (CH - 24) / Math.max(1, lines.length));

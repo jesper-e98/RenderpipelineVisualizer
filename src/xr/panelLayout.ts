@@ -1,6 +1,6 @@
 import type { ApiId, Lang, Mode } from '../core/state';
 
-/** Everything the floating XR panel shows. */
+/** Everything the console's info screen shows. */
 export interface PanelInfo {
   group: string;
   title: string;
@@ -15,52 +15,8 @@ export interface PanelInfo {
   facts: string[];
 }
 
-export type PanelAction = 'prev' | 'next' | 'api:opengl' | 'api:vulkan' | 'api:d3d12' | 'mode' | 'exit';
-
-export interface Region {
-  action: PanelAction;
-  label: string;
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-}
-
-/** Canvas size of the panel texture (pixels). The mesh keeps the same aspect ratio. */
+/** Canvas width of the info screen texture (pixels); the height follows the mesh's aspect ratio. */
 export const PANEL_W = 1024;
-export const PANEL_H = 640;
-
-/** The button row at the bottom of the panel. */
-export function panelRegions(info: Pick<PanelInfo, 'lang' | 'mode'>): Region[] {
-  const sv = info.lang === 'sv';
-  const y = PANEL_H - 96;
-  const hgt = 72;
-  const defs: [PanelAction, string, number][] = [
-    ['prev', '‹', 90],
-    ['next', '›', 90],
-    ['api:opengl', 'OpenGL', 150],
-    ['api:vulkan', 'Vulkan', 140],
-    ['api:d3d12', 'DX12', 110],
-    ['mode', info.mode === 'data' ? (sv ? 'Koncept' : 'Concept') : sv ? 'Data' : 'Data', 150],
-    ['exit', sv ? 'Avsluta' : 'Exit', 140],
-  ];
-  const gap = 12;
-  const total = defs.reduce((a, d) => a + d[2], 0) + gap * (defs.length - 1);
-  let x = (PANEL_W - total) / 2;
-  return defs.map(([action, label, w]) => {
-    const r = { action, label, x, y, w, h: hgt };
-    x += w + gap;
-    return r;
-  });
-}
-
-/** Which button is at texture coordinate (u, v)? `v` = 0 at the bottom, like three.js UVs. */
-export function hitTest(regions: Region[], u: number, v: number): PanelAction | null {
-  const x = u * PANEL_W;
-  const y = (1 - v) * PANEL_H;
-  const r = regions.find((r) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h);
-  return r ? r.action : null;
-}
 
 /** Greedy word wrap with a pluggable text measurer (canvas in the app, char count in tests). */
 export function wrapText(text: string, maxWidth: number, measure: (s: string) => number, maxLines = 5): string[] {
@@ -94,22 +50,4 @@ export function axisAction(x: number, y: number, latched: boolean): { action: 'a
   if (latched || mag < 0.75) return { action: null, latched };
   if (Math.abs(x) >= Math.abs(y)) return { action: x > 0 ? 'api-next' : 'api-prev', latched: true };
   return { action: 'mode', latched: true };
-}
-
-/**
- * Stage carousel around the user: slides 0–9 on an arc to the left, 10–19 to the right,
- * leaving the space straight ahead free for the table. Returns the angle from straight ahead
- * in degrees (negative = left).
- */
-export function carouselAngle(i: number, perSide = 10, inner = 27, span = 88): number {
-  const left = i < perSide;
-  const k = left ? i : i - perSide;
-  const step = span / (perSide - 1);
-  return left ? -(inner + span) + k * step : inner + k * step;
-}
-
-/** Position of carousel tile `i` in the lab frame (user at origin, looking down −z). */
-export function carouselPosition(i: number, radius = 0.62, height = 1.4): [number, number, number] {
-  const a = (carouselAngle(i) * Math.PI) / 180;
-  return [Math.sin(a) * radius, height, -Math.cos(a) * radius];
 }
