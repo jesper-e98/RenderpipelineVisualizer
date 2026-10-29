@@ -64,13 +64,14 @@ const VERT = /* glsl */ `
 attribute vec3 aFaceNormal;
 attribute float aTri;
 uniform float uExplode;
+uniform float uExplodeUser;
 varying vec3 vNormal;
 varying vec3 vObjPos;
 varying vec2 vUv;
 varying float vTri;
 varying float vViewZ;
 void main() {
-  vec3 p = position + aFaceNormal * uExplode;
+  vec3 p = position + aFaceNormal * (uExplode + uExplodeUser);
   vNormal = normalize(mat3(modelMatrix) * normal);
   vObjPos = position;
   vUv = uv;
@@ -176,6 +177,7 @@ export type PipelineMaterial = ShaderMaterial & {
     uBackTint: { value: number };
     uFlipFacing: { value: number };
     uExplode: { value: number };
+    uExplodeUser: { value: number };
     uTime: { value: number };
   };
 };
@@ -206,6 +208,7 @@ export function pipelineMaterial(): PipelineMaterial {
       uBackTint: { value: 0 },
       uFlipFacing: { value: 0 },
       uExplode: { value: 0 },
+      uExplodeUser: { value: 0 },
       uTime: { value: 0 },
     },
   }) as PipelineMaterial;

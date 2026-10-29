@@ -329,6 +329,15 @@ export function createModelStage(host: HTMLElement, ctx: SlideContext, opts: Mod
     else tween(u, { value, duration: dur(seconds), ease: 'power2.inOut' });
   };
 
+  // Holo-lab hooks: pull the model apart and toggle layers from XR, on top of the slide's own state.
+  view.xrHooks = {
+    explode: (a) => {
+      material.uniforms.uExplodeUser.value = a;
+    },
+    setLayer: (name, opacity) => setLayer(name, opacity, 0.35),
+    getLayer: (name) => (name === 'solid' ? (solid.visible ? material.uniforms.uOpacity.value : 0) : layers[name].visible ? opacityOf(layers[name]) .opacity : 0),
+  };
+
   const marks = new Group();
   pivot.add(marks);
   const clearMarks = () => {

@@ -324,3 +324,11 @@ dl.terms dd { margin: 0; color: var(--muted); }
 .xr-btn { font-weight: 800; letter-spacing: 0.06em; background: linear-gradient(135deg, rgba(155, 123, 255, 0.3), rgba(255, 63, 210, 0.25)); }
 .xr-btn.on { background: var(--magenta); color: #05060d; box-shadow: 0 0 18px var(--magenta); }
 body.xr-presenting .three-labels { display: none; }
+
+/* ---------- Desktop XR simulator ---------- */
+.xrsim { position: fixed; inset: 0; z-index: 80; background: radial-gradient(circle at 50% 40%, #0b1030, #020308); cursor: crosshair; }
+.xrsim .three-wrap { position: absolute; inset: 0; }
+.xrsim-hint { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 2; padding: 8px 14px; border-radius: 10px; background: rgba(5, 6, 13, 0.75); border: 1px solid var(--line-strong); color: var(--muted); font-size: 12.5px; max-width: calc(100vw - 32px); text-align: center; pointer-events: none; }
+.xrsim-hint b { color: var(--cyan); }
+.xrsim-exit { position: absolute; top: 14px; right: 14px; z-index: 2; }
+.xr-btn.sim { background: linear-gradient(135deg, rgba(56, 225, 255, 0.3), rgba(155, 123, 255, 0.3)); }

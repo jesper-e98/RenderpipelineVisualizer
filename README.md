@@ -24,11 +24,32 @@ for OpenGL, Vulkan and DirectX 12. UI in Swedish and English.*
     följer respektive API:s konventioner (t.ex. z ∈ [−1, 1] i OpenGL, z ∈ [0, 1] och vänd Y i Vulkan).
   - *Koncept* – illustrativa animationer av idén bakom varje steg.
 - **Svenska / engelska** med växlare uppe till höger.
-- **VR och AR (WebXR)** – i en webbläsare med WebXR (t.ex. Meta Quest Browser, eller Chrome på Android för AR)
-  dyker knapparna **VR** och **AR** upp i toppfältet. Då placeras slidens 3D-scen framför dig med en svävande
-  textpanel bredvid. Avtryckaren går till nästa steg, grepp-knappen går tillbaka, tumspaken byter API
-  (vänster/höger) och läge (upp/ned), och knapparna på panelen fungerar med laserpekaren. WebXR kräver https,
-  vilket GitHub Pages har.
+- **Holo-labbet i VR och AR (WebXR)** – en Jarvis/Tony Stark-inspirerad 3D-miljö. I en webbläsare med
+  WebXR (bäst i Meta Quest Browser på Quest 3/3S) dyker knapparna **VR** och **AR** upp i toppfältet (se nedan).
+
+## Holo-labbet (VR/AR)
+
+Gå in i VR eller AR så projiceras ett holografiskt bord fram framför dig. Slidens 3D-scen svävar ovanför
+bordet och spelar upp samma animationer som på skärmen.
+
+| Gest (händer) | Kontroller | Vad händer |
+|---|---|---|
+| Nyp på/nära hologrammet och dra | Avtryckare | Flytta och vrid hologrammet, släpp med fart så snurrar det vidare |
+| Nyp med båda händerna | Båda avtryckarna | Skala (dra isär/ihop) och vrid runt |
+| Två knutna nävar, dra isär | Båda grepp-knapparna | Exploded view – trianglarna glider isär |
+| Peta med pekfingret | Sikta + avtryckare | Tryck på knappar, steg-karusellen och reglagen |
+| – | Tumspak vänster/höger, upp/ned | Byt API, byt läge |
+
+Runt dig finns:
+- **Steg-karusellen** med pipelinens 20 steg, till vänster och höger om dig.
+- **Infoskärmen** bakom hologrammet, med titel, punkt, siffror och ‹ › / API / läge. Greppa handtaget "flytta" för att
+  flytta den.
+- **Holo-kontrollen** vid bordskanten: dra isär-reglage, lager (solid/wire/punkter/normaler), modellval,
+  ‹ ›, återställ vy, ljud och avsluta.
+
+**Utan headset:** öppna sidan med `?xrsim` i adressen (t.ex. `…/RenderpipelineVisualizer/?xrsim`) och tryck på
+**SIM**. Sikta med musen och håll vänster knapp för att nypa. Shift+dra = två händer, Alt+dra = dra isär,
+högerdra/pilar = titta runt, WASD = gå och Esc = lämna.
 
 ## Kom igång
 

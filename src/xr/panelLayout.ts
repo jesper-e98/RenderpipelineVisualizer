@@ -95,3 +95,21 @@ export function axisAction(x: number, y: number, latched: boolean): { action: 'a
   if (Math.abs(x) >= Math.abs(y)) return { action: x > 0 ? 'api-next' : 'api-prev', latched: true };
   return { action: 'mode', latched: true };
 }
+
+/**
+ * Stage carousel around the user: slides 0–9 on an arc to the left, 10–19 to the right,
+ * leaving the space straight ahead free for the table. Returns the angle from straight ahead
+ * in degrees (negative = left).
+ */
+export function carouselAngle(i: number, perSide = 10, inner = 27, span = 88): number {
+  const left = i < perSide;
+  const k = left ? i : i - perSide;
+  const step = span / (perSide - 1);
+  return left ? -(inner + span) + k * step : inner + k * step;
+}
+
+/** Position of carousel tile `i` in the lab frame (user at origin, looking down −z). */
+export function carouselPosition(i: number, radius = 0.62, height = 1.4): [number, number, number] {
+  const a = (carouselAngle(i) * Math.PI) / 180;
+  return [Math.sin(a) * radius, height, -Math.cos(a) * radius];
+}

@@ -21,6 +21,16 @@ export interface StageView {
   onFrame?: (t: number, dt: number) => void;
   /** Called when the host is resized. */
   onResize?: (width: number, height: number) => void;
+  /** Optional controls the XR holo-lab can use on this view (pull apart, layers). */
+  xrHooks?: XRHooks;
+}
+
+export type XRLayer = 'solid' | 'wire' | 'points' | 'normals';
+export interface XRHooks {
+  /** Extra explode on top of whatever the slide does (0 = assembled). */
+  explode(amount: number): void;
+  setLayer(name: XRLayer, opacity: number): void;
+  getLayer(name: XRLayer): number;
 }
 
 /**
@@ -50,6 +60,11 @@ export class ThreeStage {
   /** In AR, objects tagged `userData.xrHideInAR` (star fields, backdrops) are hidden. */
   xrHideTagged = false;
   private labelSyncT = 0;
+  /** Desktop XR simulator: render the XR world into this element instead of a headset. */
+  private simHost: HTMLElement | null = null;
+  private simRO: ResizeObserver | null = null;
+  /** Called when the scene shown in XR changes (new slide / rebuild). */
+  xrSceneChanged: ((scene: Scene) => void) | null = null;
 
   constructor() {
     let renderer: WebGLRenderer | null = null;
@@ -77,7 +92,41 @@ export class ThreeStage {
   }
 
   get presenting(): boolean {
-    return !!this.renderer?.xr.isPresenting;
+    return !!this.renderer?.xr.isPresenting || !!this.simHost;
+  }
+
+  get simulating(): boolean {
+    return !!this.simHost;
+  }
+
+  /** XR hooks of the view on screen, if it offers any. */
+  get xrHooks(): XRHooks | undefined {
+    return this.current?.view.xrHooks;
+  }
+
+  /** Start / stop the desktop XR simulator, which renders the XR world into `host`. */
+  setSimHost(host: HTMLElement | null): void {
+    this.simRO?.disconnect();
+    this.simRO = null;
+    this.simHost = host;
+    if (host) {
+      host.append(this.wrap);
+      this.simRO = new ResizeObserver(() => this.resizeSim());
+      this.simRO.observe(host);
+      this.resizeSim();
+    } else {
+      if (this.current) this.current.host.append(this.wrap);
+      this.endXR();
+    }
+  }
+
+  private resizeSim(): void {
+    if (!this.simHost || !this.renderer) return;
+    const w = Math.max(1, this.simHost.clientWidth);
+    const h = Math.max(1, this.simHost.clientHeight);
+    this.renderer.setSize(w, h, false);
+    this.xrCamera.aspect = w / h;
+    this.xrCamera.updateProjectionMatrix();
   }
 
   /** Put the 3D canvas into `host` and start rendering `view`. */
@@ -87,7 +136,7 @@ export class ThreeStage {
       host.append(Object.assign(document.createElement('div'), { className: 'no-webgl', textContent: 'WebGL 2 is not available in this browser.' }));
       return;
     }
-    host.append(this.wrap);
+    (this.simHost ?? host).append(this.wrap);
     const ro = new ResizeObserver(() => this.resize());
     ro.observe(host);
     let controls: OrbitControls | undefined;
@@ -119,7 +168,7 @@ export class ThreeStage {
     cur.controls?.dispose();
     const canvas = this.renderer!.domElement;
     if (this.presenting) {
-      this.wrap.remove();
+      if (!this.simHost) this.wrap.remove();
       return;
     }
     try {
@@ -191,6 +240,7 @@ export class ThreeStage {
         if (o.userData.xrHideInAR) o.visible = !this.xrHideTagged;
       });
       this.labelSyncT = 0;
+      this.xrSceneChanged?.(scene);
     }
     this.labelSyncT -= 1;
     if (this.labelSyncT <= 0) {
@@ -237,7 +287,7 @@ function hideLabelSprites(scene?: Scene): void {
   });
 }
 
-export function textSprite(text: string, color = '#e8ebff', worldHeight = 0.16): Sprite {
+export function textSprite(text: string, color = "#e8ebff", worldHeight = 0.1): Sprite {
   const c = document.createElement('canvas');
   const g = c.getContext('2d')!;
   const font = '600 40px "JetBrains Mono", monospace';
