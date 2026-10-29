@@ -49,3 +49,20 @@ describe('XR thumbstick', () => {
     expect(axisAction(0.5, 0, false).action).toBeNull(); // dead zone
   });
 });
+
+describe('XR stage carousel', () => {
+  it('puts 0–9 on the left arc and 10–19 on the right, clear of the table ahead', async () => {
+    const { carouselAngle, carouselPosition } = await import('../src/xr/panelLayout');
+    for (let i = 0; i < 10; i++) expect(carouselAngle(i)).toBeLessThanOrEqual(-27);
+    for (let i = 10; i < 20; i++) expect(carouselAngle(i)).toBeGreaterThanOrEqual(27);
+    expect(carouselAngle(0)).toBeCloseTo(-115, 5);
+    expect(carouselAngle(9)).toBeCloseTo(-27, 5);
+    expect(carouselAngle(19)).toBeCloseTo(115, 5);
+    // Within arm's reach and evenly spaced.
+    const d = (a: number[], b: number[]) => Math.hypot(a[0] - b[0], a[2] - b[2]);
+    const p = Array.from({ length: 20 }, (_, i) => carouselPosition(i));
+    for (const q of p) expect(Math.hypot(q[0], q[2])).toBeCloseTo(0.62, 5);
+    expect(d(p[0], p[1])).toBeCloseTo(d(p[5], p[6]), 5);
+    expect(d(p[0], p[1])).toBeGreaterThan(0.085); // tiles (0.082 m) don't overlap
+  });
+});

@@ -12,6 +12,7 @@ import { SLIDES } from './slides';
 import { GROUP_LABEL } from './slides/standard';
 import { ThreeStage } from './views/ThreeStage';
 import { XRController } from './xr/XRController';
+import { XRSim } from './xr/XRSim';
 
 const app = document.getElementById('app')!;
 
@@ -66,6 +67,8 @@ app.append(bgGlow, topbar, stageEl, bottombar, dropOverlay, toast);
 const stage = new ThreeStage();
 const engine = new SlideEngine(stageEl, SLIDES, store, stage, () => derived);
 const xr = new XRController(stage, engine, store);
+// Desktop XR simulator (try the holo-lab without a headset): add ?xrsim to the URL.
+const xrsim = new URLSearchParams(location.search).has('xrsim') ? new XRSim(stage, xr, store) : null;
 
 function segmented<T extends string>(host: HTMLElement, items: { id: T; label: string; cls?: string }[], current: T, onPick: (id: T) => void) {
   host.replaceChildren(
@@ -254,9 +257,10 @@ window.addEventListener('rpv:load-file', (e) => loadFile((e as CustomEvent<File>
 window.addEventListener('rpv:go', (e) => engine.go((e as CustomEvent<number>).detail, 0));
 
 // Debug/testing hook.
-(window as unknown as { rpv: unknown }).rpv = { store, engine, stage, xr, get derived() { return derived; } };
+(window as unknown as { rpv: unknown }).rpv = { store, engine, stage, xr, xrsim, get derived() { return derived; } };
 
 renderChrome();
 engine.start();
 void xr.mountButtons(xrControls);
+xrsim?.mountButton(xrControls);
 window.addEventListener('rpv:toast', (e) => showToast((e as CustomEvent<string>).detail, 'err'));
